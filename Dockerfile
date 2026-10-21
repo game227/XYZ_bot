@@ -18,6 +18,7 @@ RUN pip install .
 
 COPY alembic.ini ./
 COPY migrations ./migrations
+COPY scripts ./scripts
 
 USER app
 CMD ["python", "-m", "app.main"]

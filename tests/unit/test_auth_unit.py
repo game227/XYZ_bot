@@ -4,7 +4,12 @@ import pytest
 
 from app.services import auth, teacher_sessions
 from app.services.errors import InvalidInput
-from tests.teacher_helpers import make_limiter
+from tests.teacher_helpers import make_limiter, use_cheap_hasher
+
+
+@pytest.fixture(autouse=True)
+def cheap_hasher(monkeypatch):
+    use_cheap_hasher(monkeypatch)
 
 
 async def test_password_hash_is_argon2id_and_verifies() -> None:

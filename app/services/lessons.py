@@ -807,3 +807,15 @@ async def publish_lesson(session: AsyncSession, actor: User, lesson_id: int) -> 
         else:
             await notifications.notify_new_lesson(session, lesson.id)
     return lesson
+
+
+async def list_course_lessons(session: AsyncSession, course_id: int) -> list[Lesson]:
+    """All lessons of a course (inactive included) in catalog order — for editors."""
+    stmt = (
+        select(Lesson)
+        .join(Topic, Topic.id == Lesson.topic_id)
+        .join(Module, Module.id == Topic.module_id)
+        .where(Lesson.course_id == course_id)
+        .order_by(Module.position, Module.id, Topic.position, Topic.id, Lesson.position, Lesson.id)
+    )
+    return list(await session.scalars(stmt))

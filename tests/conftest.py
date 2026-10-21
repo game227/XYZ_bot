@@ -16,6 +16,12 @@ import pytest_asyncio
 os.environ.setdefault("BOT_TOKEN", "123456789:TEST-token-TEST-token-TEST-token-123")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production-0123456789")
 os.environ.setdefault("SUPERADMIN_IDS", "")
+# Safety net: app code that opens its own sessions (web deps, session_scope, workers) must use the
+# test database, never the dev database configured in .env. Without TEST_DATABASE_URL it fails fast.
+os.environ["DATABASE_URL"] = os.environ.get(
+    "TEST_DATABASE_URL", "postgresql+asyncpg://no-test-db:x@127.0.0.1:1/no_test_db"
+)
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/15")
 
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.ext.asyncio import (  # noqa: E402

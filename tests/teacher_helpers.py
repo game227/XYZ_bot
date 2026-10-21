@@ -14,6 +14,15 @@ from app.database.models import Course, Subject, TeacherAccount, TeacherCourseAs
 from app.services import auth
 
 
+def use_cheap_hasher(monkeypatch) -> None:
+    """Argon2id with tiny params for tests (production: 64 MiB per hash)."""
+    from argon2 import PasswordHasher
+
+    cheap = PasswordHasher(time_cost=1, memory_cost=8192, parallelism=1)
+    monkeypatch.setattr(auth, "_hasher", cheap)
+    monkeypatch.setattr(auth, "_DUMMY_HASH", cheap.hash("dummy-password-for-timing"))
+
+
 class FakeRedis:
     """In-memory subset of redis.asyncio used by the login limiter (TTL via a fake clock)."""
 

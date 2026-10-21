@@ -15,6 +15,7 @@ import logging
 import math
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from io import BytesIO
 from pathlib import PurePosixPath
 from typing import Any
@@ -30,6 +31,7 @@ from app.config import get_settings
 from app.database.models import (
     AdminPermission,
     Lesson,
+    LessonAccess,
     LessonMedia,
     MediaFile,
     MediaKind,
@@ -159,6 +161,24 @@ class MediaToken:
     telegram_id: int
     media_id: int
     expires_at: int  # unix seconds
+    teacher: bool = False  # granted through a teacher session: re-checked on every request
+    subscriber: bool = False  # granted through a subscription: re-checked on playlist/key
+
+
+@dataclass(frozen=True, slots=True)
+class PlaybackGrant:
+    """Result of `authorize_playback`: what may be played and until when at most."""
+
+    media: MediaFile
+    access_until: datetime | None = None  # end of the subscription / teacher session behind the grant
+    teacher: bool = False
+    subscriber: bool = False
+
+    def ttl(self, requested: int, now: datetime) -> int:
+        """Token lifetime capped at the end of the authorizing access."""
+        if self.access_until is None:
+            return requested
+        return max(0, min(requested, int((self.access_until - now).total_seconds())))
 
 
 def _b64(data: bytes) -> str:
@@ -175,11 +195,22 @@ def _sign(payload: bytes) -> bytes:
 
 
 def issue_token(
-    telegram_id: int, media_id: int, *, ttl_seconds: int | None = None, now: float | None = None
+    telegram_id: int,
+    media_id: int,
+    *,
+    ttl_seconds: int | None = None,
+    now: float | None = None,
+    teacher: bool = False,
+    subscriber: bool = False,
 ) -> str:
-    ttl = ttl_seconds or get_settings().media_token_ttl_seconds
+    ttl = get_settings().media_token_ttl_seconds if ttl_seconds is None else ttl_seconds
     issued = int(now if now is not None else utcnow().timestamp())
-    payload = json.dumps({"u": telegram_id, "m": media_id, "x": issued + ttl}, separators=(",", ":")).encode()
+    data: dict[str, int] = {"u": telegram_id, "m": media_id, "x": issued + ttl}
+    if teacher:
+        data["t"] = 1
+    if subscriber:
+        data["s"] = 1
+    payload = json.dumps(data, separators=(",", ":")).encode()
     return f"{_b64(payload)}.{_b64(_sign(payload))}"
 
 
@@ -191,7 +222,9 @@ def verify_token(token: str, *, now: float | None = None) -> MediaToken | None:
         if not hmac.compare_digest(_sign(payload), _unb64(sig_b64)):
             return None
         data = json.loads(payload)
-        parsed = MediaToken(int(data["u"]), int(data["m"]), int(data["x"]))
+        parsed = MediaToken(
+            int(data["u"]), int(data["m"]), int(data["x"]), bool(data.get("t")), bool(data.get("s"))
+        )
     except (ValueError, KeyError, TypeError):
         return None
     current = now if now is not None else utcnow().timestamp()
@@ -251,17 +284,18 @@ async def require_media_manager(session: AsyncSession, user: User, lesson_id: in
 
 async def authorize_playback(
     session: AsyncSession, user: User, media_id: int, lesson_id: int | None
-) -> MediaFile:
+) -> PlaybackGrant:
     """Server-side access check before a playback token is issued (TZ §9.3).
 
     The media must be attached to the given lesson, so a free lesson can't be used to unlock
-    another lesson's video.
+    another lesson's video. The grant carries the end of the access that authorized it
+    (teacher session / subscription) so tokens never outlive it.
     """
     media = await session.get(MediaFile, media_id)
     if media is None or media.kind != MediaKind.VIDEO:
         raise NotFound()
     if has_permission(user, AdminPermission.CONTENT):
-        return _ready(media)
+        return PlaybackGrant(_ready(media))
     if lesson_id is None:
         raise AccessDenied()
     linked = await session.scalar(
@@ -270,17 +304,61 @@ async def authorize_playback(
     lesson = await session.get(Lesson, lesson_id)
     if linked is None or lesson is None or not lesson.is_active:
         raise NotFound()
+    from app.services import lessons  # CONTENT; imported lazily
+
     if user.role == UserRole.TEACHER and not is_admin(user):
         # Teacher media access is bound to the active 24h session.
         from app.services import teacher_sessions
 
-        if await teacher_sessions.get_active_session(session, user.telegram_id) is None:
+        active = await teacher_sessions.get_active_session(session, user.telegram_id)
+        if active is None:
             raise AccessDenied("O‘qituvchi sessiyasi tugagan. Iltimos, qayta kiring.")
-    from app.services import lessons  # CONTENT; imported lazily
+        if not await lessons.can_view_lesson(session, user, lesson):
+            raise AccessDenied()
+        return PlaybackGrant(_ready(media), active.expires_at, teacher=True)
 
     if not await lessons.can_view_lesson(session, user, lesson):
         raise SubscriptionRequired()
-    return _ready(media)
+    if (
+        lesson.is_free
+        and await lessons.is_lesson_public(session, lesson)
+        and await _opened_free(session, user, lesson)
+    ):
+        return PlaybackGrant(_ready(media))  # free allowance: no end date
+    from app.services.subscriptions import effective_end
+
+    end = await effective_end(session, user.id)
+    if end is None:  # only content staff reach here without a subscription
+        raise SubscriptionRequired()
+    return PlaybackGrant(_ready(media), end, subscriber=True)
+
+
+async def _opened_free(session: AsyncSession, user: User, lesson: Lesson) -> bool:
+    return bool(
+        await session.scalar(
+            select(LessonAccess.consumed_free_slot).where(
+                LessonAccess.user_id == user.id, LessonAccess.lesson_id == lesson.id
+            )
+        )
+    )
+
+
+async def token_still_valid(
+    session: AsyncSession, token: MediaToken, *, check_subscription: bool = True
+) -> bool:
+    """Re-check the access behind a token (teacher session revoked, subscription cancelled)."""
+    if token.teacher:
+        from app.services import teacher_sessions
+
+        if await teacher_sessions.get_active_session(session, token.telegram_id) is None:
+            return False
+    if token.subscriber and check_subscription:
+        from app.services.subscriptions import has_active_subscription
+
+        user_id = await session.scalar(select(User.id).where(User.telegram_id == token.telegram_id))
+        if user_id is None or not await has_active_subscription(session, user_id):
+            return False
+    return True
 
 
 def _ready(media: MediaFile) -> MediaFile:

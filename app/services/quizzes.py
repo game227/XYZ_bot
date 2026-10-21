@@ -46,7 +46,8 @@ from app.services.subscriptions import has_active_subscription
 from app.utils.time import utcnow
 
 TEXT_ANSWER_MAX = 500
-QUESTION_TEXT_MAX = 3000
+QUESTION_TEXT_MAX = 2000
+CHOICE_TEXT_MAX = 200  # options are listed in one message, keep them short
 OPTION_TEXT_MAX = 1000
 MAX_OPTIONS = 10  # keeps the inline keyboard usable
 TWO_PLACES = Decimal("0.01")
@@ -183,6 +184,9 @@ def parse_options_block(raw: str, qtype: QuestionType) -> list[tuple[str, bool]]
 
 def validate_options(qtype: QuestionType, items: Sequence[tuple[str, bool]]) -> None:
     n_correct = sum(1 for _, ok in items if ok)
+    limit = OPTION_TEXT_MAX if qtype == QuestionType.TEXT else CHOICE_TEXT_MAX
+    if any(not t.strip() or len(t) > limit for t, _ in items):
+        raise InvalidInput(f"Har bir variant 1–{limit} belgi bo‘lishi kerak.")
     if qtype == QuestionType.TEXT:
         if n_correct < 1:
             raise InvalidInput("Kamida bitta to‘g‘ri javob kiriting.")
@@ -572,12 +576,13 @@ class ResultRow:
     quiz_title: str
     lesson_title: str
     course_title: str
+    quiz_visibility: QuizResultVisibility
     user: User | None = None
 
 
 def _results_stmt():
     return (
-        select(QuizAttempt, Quiz.title, Lesson.title, Course.title)
+        select(QuizAttempt, Quiz.title, Lesson.title, Course.title, Quiz.result_visibility)
         .join(Quiz, Quiz.id == QuizAttempt.quiz_id)
         .join(Lesson, Lesson.id == Quiz.lesson_id)
         .join(Course, Course.id == Lesson.course_id)
@@ -599,7 +604,7 @@ async def results_for_user(
     if course_ids is not None:
         stmt = stmt.where(Lesson.course_id.in_(course_ids or {-1}))
     rows = await session.execute(stmt.limit(limit).offset(offset))
-    return [ResultRow(a, qt, lt, ct) for a, qt, lt, ct in rows.all()]
+    return [ResultRow(a, qt, lt, ct, QuizResultVisibility(v)) for a, qt, lt, ct, v in rows.all()]
 
 
 async def results_for_course(
@@ -619,7 +624,7 @@ async def results_for_course(
     if quiz_id is not None:
         stmt = stmt.where(QuizAttempt.quiz_id == quiz_id)
     rows = await session.execute(stmt.limit(limit).offset(offset))
-    return [ResultRow(a, qt, lt, ct, u) for a, qt, lt, ct, u in rows.all()]
+    return [ResultRow(a, qt, lt, ct, QuizResultVisibility(v), u) for a, qt, lt, ct, v, u in rows.all()]
 
 
 async def count_user_results(session: AsyncSession, user_id: int) -> int:

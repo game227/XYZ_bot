@@ -5,6 +5,7 @@ Routers are auto-discovered: every module in app/web/routers/ exposing a module-
 """
 
 import importlib
+import logging
 import pkgutil
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,6 +16,8 @@ from fastapi.staticfiles import StaticFiles
 from app.config import get_settings
 from app.database.session import get_engine
 from app.utils.logging import setup_logging
+
+logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -33,6 +36,13 @@ def _collect_routers() -> list[APIRouter]:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    from app.services import storage
+
+    try:
+        # Uploads go straight to S3; on a fresh store the bucket may not exist yet.
+        await storage.ensure_bucket()
+    except Exception:  # noqa: BLE001 - storage being down must not stop the web service
+        logger.warning("could not ensure the media bucket at startup", exc_info=True)
     yield
     await get_engine().dispose()
 

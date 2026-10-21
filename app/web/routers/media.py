@@ -26,6 +26,7 @@ from app.config import get_settings
 from app.database.models import MediaFile, User
 from app.services import media, storage
 from app.services.errors import AccessDenied, Conflict, InvalidInput, NotFound, ServiceError
+from app.utils.time import utcnow
 from app.web.deps import get_db
 from app.web.telegram_auth import webapp_user
 from app.workers.transcode import KEY_URI, PLAYLIST
@@ -101,11 +102,18 @@ async def play(
     user: WebUser,
 ) -> PlayResponse:
     with service_errors():
-        item = await media.authorize_playback(session, user, body.media_id, body.lesson_id)
+        grant = await media.authorize_playback(session, user, body.media_id, body.lesson_id)
+    item = grant.media
     ttl = get_settings().media_token_ttl_seconds
     if body.native:
         ttl = min(max(ttl, (item.duration_seconds or 0) + ttl), NATIVE_TOKEN_MAX)
-    token = media.issue_token(user.telegram_id, item.id, ttl_seconds=ttl)
+    # Never outlive the subscription / teacher session that authorized playback.
+    ttl = grant.ttl(ttl, utcnow())
+    if ttl <= 0:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Ruxsat muddati tugagan.")
+    token = media.issue_token(
+        user.telegram_id, item.id, ttl_seconds=ttl, teacher=grant.teacher, subscriber=grant.subscriber
+    )
     logger.info("playback token issued media=%s user=%s ttl=%s", item.id, user.telegram_id, ttl)
     return PlayResponse(
         token=token,
@@ -123,9 +131,20 @@ def _token_or_403(token: str) -> media.MediaToken:
     return parsed
 
 
-@router.get("/hls/{token}/" + PLAYLIST, include_in_schema=False)
-async def playlist(token: str) -> Response:
+async def _valid_token_or_403(session: AsyncSession, token: str, *, full_check: bool) -> media.MediaToken:
+    """Signature/expiry always; the access behind the token is re-checked from the DB:
+    teacher sessions on every request (TZ §7.4), subscriptions on playlist and key."""
     parsed = _token_or_403(token)
+    if (parsed.teacher or parsed.subscriber) and not await media.token_still_valid(
+        session, parsed, check_subscription=full_check
+    ):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Ruxsat bekor qilingan.")
+    return parsed
+
+
+@router.get("/hls/{token}/" + PLAYLIST, include_in_schema=False)
+async def playlist(token: str, session: DbSession) -> Response:
+    parsed = await _valid_token_or_403(session, token, full_check=True)
     try:
         data = await storage.get_bytes(f"hls/{parsed.media_id}/{PLAYLIST}")
     except Exception:  # noqa: BLE001
@@ -135,7 +154,7 @@ async def playlist(token: str) -> Response:
 
 @router.get("/hls/{token}/" + KEY_URI, include_in_schema=False)
 async def hls_key(token: str, session: DbSession) -> Response:
-    parsed = _token_or_403(token)
+    parsed = await _valid_token_or_403(session, token, full_check=True)
     item = await session.get(MediaFile, parsed.media_id)
     if item is None or item.hls_aes_key is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -143,8 +162,8 @@ async def hls_key(token: str, session: DbSession) -> Response:
 
 
 @router.get("/hls/{token}/{segment}", include_in_schema=False)
-async def hls_segment(token: str, segment: str) -> Response:
-    parsed = _token_or_403(token)
+async def hls_segment(token: str, segment: str, session: DbSession) -> Response:
+    parsed = await _valid_token_or_403(session, token, full_check=False)
     if not SEGMENT_RE.match(segment):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     key = f"hls/{parsed.media_id}/{segment}"
