@@ -41,26 +41,58 @@ def build_ffmpeg_cmd(
     ffmpeg_bin: str, src: Path, out_dir: Path, key_info: Path, *, segment_seconds: int, max_height: int = 720
 ) -> list[str]:
     return [
-        ffmpeg_bin, "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
-        "-i", str(src),
-        "-map", "0:v:0", "-map", "0:a:0?",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-profile:v", "main", "-pix_fmt", "yuv420p",
-        "-vf", f"scale=-2:'min({max_height},ih)'",
-        "-force_key_frames", f"expr:gte(t,n_forced*{segment_seconds})",
-        "-c:a", "aac", "-b:a", "128k", "-ac", "2",
-        "-f", "hls", "-hls_time", str(segment_seconds), "-hls_playlist_type", "vod",
-        "-hls_key_info_file", str(key_info),
-        "-hls_segment_filename", str(out_dir / SEGMENT_PATTERN),
+        ffmpeg_bin,
+        "-hide_banner",
+        "-nostdin",
+        "-y",
+        "-loglevel",
+        "error",
+        "-i",
+        str(src),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-profile:v",
+        "main",
+        "-pix_fmt",
+        "yuv420p",
+        "-vf",
+        f"scale=-2:'min({max_height},ih)'",
+        "-force_key_frames",
+        f"expr:gte(t,n_forced*{segment_seconds})",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-ac",
+        "2",
+        "-f",
+        "hls",
+        "-hls_time",
+        str(segment_seconds),
+        "-hls_playlist_type",
+        "vod",
+        "-hls_key_info_file",
+        str(key_info),
+        "-hls_segment_filename",
+        str(out_dir / SEGMENT_PATTERN),
         str(out_dir / PLAYLIST),
-    ]  # fmt: skip
+    ]
 
 
-async def _run(cmd: list[str], timeout: float) -> tuple[int, bytes, bytes]:
+async def _run(cmd: list[str], limit_seconds: float) -> tuple[int, bytes, bytes]:
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout)
+        out, err = await asyncio.wait_for(proc.communicate(), limit_seconds)
     except TimeoutError:
         proc.kill()
         await proc.wait()
@@ -69,7 +101,16 @@ async def _run(cmd: list[str], timeout: float) -> tuple[int, bytes, bytes]:
 
 
 async def probe_duration(ffmpeg_bin: str, src: Path) -> int | None:
-    cmd = [ffprobe_bin(ffmpeg_bin), "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(src)]
+    cmd = [
+        ffprobe_bin(ffmpeg_bin),
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "csv=p=0",
+        str(src),
+    ]
     try:
         code, out, _ = await _run(cmd, 120)
     except (OSError, TranscodeError):
@@ -81,9 +122,9 @@ async def probe_duration(ffmpeg_bin: str, src: Path) -> int | None:
 
 
 async def transcode_to_hls(
-    ffmpeg_bin: str, src: Path, work_dir: Path, *, segment_seconds: int = 6, timeout: float = 4 * 3600
+    ffmpeg_bin: str, src: Path, work_dir: Path, *, segment_seconds: int = 6, limit_seconds: float = 4 * 3600
 ) -> HlsResult:
-    """Transcode `src` into `work_dir/hls/` as AES-128 encrypted HLS. The key never goes into the output dir."""
+    """Transcode `src` into `work_dir/hls/` as AES-128 HLS. The key file never lands in the output dir."""
     out_dir = work_dir / "hls"
     out_dir.mkdir(parents=True, exist_ok=True)
     aes_key = secrets.token_bytes(16)
@@ -94,9 +135,11 @@ async def transcode_to_hls(
 
     duration = await probe_duration(ffmpeg_bin, src)
     cmd = build_ffmpeg_cmd(ffmpeg_bin, src, out_dir, key_info, segment_seconds=segment_seconds)
-    code, _, err = await _run(cmd, timeout)
+    code, _, err = await _run(cmd, limit_seconds)
     key_file.unlink(missing_ok=True)
     if code != 0 or not (out_dir / PLAYLIST).exists():
         # ffmpeg stderr may contain paths only; keep it short.
-        raise TranscodeError((err.decode(errors="replace").strip().splitlines() or ["ffmpeg failed"])[-1][:300])
+        raise TranscodeError(
+            (err.decode(errors="replace").strip().splitlines() or ["ffmpeg failed"])[-1][:300]
+        )
     return HlsResult(out_dir, aes_key, duration)

@@ -58,16 +58,31 @@ ALLOWED_EXTENSIONS: dict[MediaKind, set[str]] = {
 }
 
 CONTENT_TYPES = {
-    "mp4": "video/mp4", "mov": "video/quicktime", "m4v": "video/mp4", "mkv": "video/x-matroska",
-    "webm": "video/webm", "mp3": "audio/mpeg", "m4a": "audio/mp4", "aac": "audio/aac",
-    "ogg": "audio/ogg", "oga": "audio/ogg", "wav": "audio/wav", "pdf": "application/pdf",
-    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp",
-    "doc": "application/msword", "ppt": "application/vnd.ms-powerpoint",
-    "xls": "application/vnd.ms-excel", "txt": "text/plain", "zip": "application/zip",
+    "mp4": "video/mp4",
+    "mov": "video/quicktime",
+    "m4v": "video/mp4",
+    "mkv": "video/x-matroska",
+    "webm": "video/webm",
+    "mp3": "audio/mpeg",
+    "m4a": "audio/mp4",
+    "aac": "audio/aac",
+    "ogg": "audio/ogg",
+    "oga": "audio/ogg",
+    "wav": "audio/wav",
+    "pdf": "application/pdf",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "webp": "image/webp",
+    "doc": "application/msword",
+    "ppt": "application/vnd.ms-powerpoint",
+    "xls": "application/vnd.ms-excel",
+    "txt": "text/plain",
+    "zip": "application/zip",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-}  # fmt: skip
+}
 
 
 # --- validation ---------------------------------------------------------------------------
@@ -320,9 +335,13 @@ async def store_telegram_file(
     session.add(media)
     await session.flush()
     await log_action(
-        session, "media.uploaded", actor=actor, entity_type="media", entity_id=media.id,
+        session,
+        "media.uploaded",
+        actor=actor,
+        entity_type="media",
+        entity_id=media.id,
         details={"kind": kind.value, "size": len(data), "via": "telegram"},
-    )  # fmt: skip
+    )
     return media
 
 
@@ -497,9 +516,13 @@ async def complete_upload(session: AsyncSession, user: User, state: UploadState)
 
         await lessons.attach_media(session, state.lesson_id, media.id, actor=user)
     await log_action(
-        session, "media.uploaded", actor=user, entity_type="media", entity_id=media.id,
+        session,
+        "media.uploaded",
+        actor=user,
+        entity_type="media",
+        entity_id=media.id,
         details={"kind": media.kind.value, "size": state.size, "lesson_id": state.lesson_id, "via": "web"},
-    )  # fmt: skip
+    )
     return media
 
 

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <title>O‘qituvchi kabineti</title>
+  <link rel="stylesheet" href="/static/teacher/app.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/static/teacher/app.js" defer></script>
+</head>
+<body>
+  <header id="topbar" class="topbar" hidden>
+    <div class="topbar-main">
+      <div id="teacher-name" class="teacher-name"></div>
+      <div id="session-until" class="muted small"></div>
+    </div>
+    <button id="btn-settings" class="icon-btn" type="button" aria-label="Sozlamalar">⚙️</button>
+  </header>
+
+  <main>
+    <section id="view-loading" class="view">
+      <p class="center muted">Yuklanmoqda…</p>
+    </section>
+
+    <section id="view-error" class="view" hidden>
+      <p id="fatal-text" class="center"></p>
+    </section>
+
+    <section id="view-login" class="view" hidden>
+      <h1>🔐 O‘qituvchi kabineti</h1>
+      <p class="muted small">Login va parolni kiriting. Sessiya 24 soat amal qiladi va uzaytirilmaydi.</p>
+      <form id="login-form" autocomplete="off" novalidate>
+        <label>Login
+          <input id="login-login" name="login" type="text" maxlength="64" autocapitalize="none"
+                 autocomplete="username" spellcheck="false" required>
+        </label>
+        <label>Parol
+          <input id="login-password" name="password" type="password" maxlength="128"
+                 autocomplete="current-password" required>
+        </label>
+        <div id="new-password-block" hidden>
+          <p class="notice">Birinchi kirish: vaqtinchalik parolni yangi parolga almashtiring
+            (kamida 10 belgi, harf va raqam).</p>
+          <label>Yangi parol
+            <input id="login-new-password" type="password" maxlength="128" autocomplete="new-password">
+          </label>
+          <label>Yangi parolni takrorlang
+            <input id="login-new-password2" type="password" maxlength="128" autocomplete="new-password">
+          </label>
+        </div>
+        <p id="login-error" class="error" role="alert" hidden></p>
+        <button id="login-submit" type="submit" class="btn">Kirish</button>
+      </form>
+    </section>
+
+    <section id="view-threads" class="view" hidden>
+      <div class="row-between">
+        <h1>💬 Chatlar</h1>
+        <button id="btn-refresh" class="link-btn" type="button">Yangilash</button>
+      </div>
+      <ul id="thread-list" class="list"></ul>
+      <p id="threads-empty" class="center muted" hidden>Hozircha yozishmalar yo‘q.</p>
+    </section>
+
+    <section id="view-thread" class="view view-thread" hidden>
+      <div class="thread-head">
+        <button id="btn-back" class="link-btn" type="button">← Orqaga</button>
+        <div>
+          <div id="thread-title" class="thread-title"></div>
+          <div id="thread-sub" class="muted small"></div>
+        </div>
+      </div>
+      <div id="messages" class="messages" aria-live="polite"></div>
+      <form id="send-form" class="send-form" autocomplete="off">
+        <textarea id="send-body" rows="2" maxlength="2000" placeholder="Xabar yozing…" required></textarea>
+        <button id="send-submit" type="submit" class="btn">Yuborish</button>
+      </form>
+      <p id="send-error" class="error" role="alert" hidden></p>
+    </section>
+
+    <section id="view-settings" class="view" hidden>
+      <div class="thread-head">
+        <button id="btn-settings-back" class="link-btn" type="button">← Orqaga</button>
+        <h1>⚙️ Sozlamalar</h1>
+      </div>
+      <h2>Parolni almashtirish</h2>
+      <p class="muted small">Parol almashtirilgach, barcha sessiyalar yakunlanadi va yangi 24 soatlik sessiya ochiladi.</p>
+      <form id="password-form" autocomplete="off">
+        <label>Joriy parol
+          <input id="pw-current" type="password" maxlength="128" autocomplete="current-password" required>
+        </label>
+        <label>Yangi parol
+          <input id="pw-new" type="password" maxlength="128" autocomplete="new-password" required>
+        </label>
+        <label>Yangi parolni takrorlang
+          <input id="pw-new2" type="password" maxlength="128" autocomplete="new-password" required>
+        </label>
+        <p id="pw-error" class="error" role="alert" hidden></p>
+        <p id="pw-ok" class="ok" hidden>Parol almashtirildi.</p>
+        <button type="submit" class="btn">Saqlash</button>
+      </form>
+      <hr>
+      <button id="btn-logout" class="btn btn-danger" type="button">🔒 Chiqish (sessiyani yakunlash)</button>
+    </section>
+  </main>
+</body>
+</html>

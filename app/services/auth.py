@@ -280,7 +280,10 @@ async def login(
         account = await session.scalar(
             select(TeacherAccount).where(TeacherAccount.login == norm_login).with_for_update()
         )
-    ok = await verify_password(account.password_hash if account else _DUMMY_HASH, password or "")
+    # Oversize passwords never reach argon2 with their full length (the web layer caps them too).
+    ok = await verify_password(
+        account.password_hash if account else _DUMMY_HASH, (password or "")[:PASSWORD_MAX_LENGTH]
+    )
 
     async def fail(reason: str, exc: ServiceError) -> None:
         locked = await limiter.register_failure(subjects)
@@ -378,7 +381,11 @@ async def change_password(
     limiter: LoginRateLimiter | None = None,
 ) -> LoginResult:
     """Voluntary password change from the cabinet. Ends every session of the teacher
-    (`password_changed`) and returns a fresh one. Wrong current password counts as a failed login."""
+    (`password_changed`) and returns a fresh one.
+
+    The new session gets a new 24h window. That is a re-authentication (the current password is
+    verified), not activity extending a session: the old session is revoked, not prolonged.
+    A wrong current password counts as a failed login."""
     limiter = limiter or get_login_limiter()
     account = ctx.teacher
     subjects = LoginRateLimiter.subjects(account.login, user.telegram_id)

@@ -31,6 +31,7 @@ from app.database.models import (
     DeliveryStatus,
     Lesson,
     LiveSession,
+    LiveSessionRegistration,
     LiveSessionStatus,
     Notification,
     NotificationAudience,
@@ -58,6 +59,7 @@ KIND_PAYMENT_REJECTED = "payment_rejected"
 KIND_NEW_LESSON = "new_lesson"
 KIND_LIVE_REMINDER = "live_reminder"
 KIND_MEDIA_READY = "media_ready"
+KIND_LIVE_CHANGED = "live_changed"
 
 # Sent even to users who turned notifications off (account/payment matters).
 CRITICAL_KINDS = {
@@ -78,6 +80,7 @@ KIND_LABELS = {
     KIND_PAYMENT_REJECTED: "🧾 To‘lov",
     KIND_NEW_LESSON: "🆕 Yangi dars",
     KIND_LIVE_REMINDER: "📅 Jonli dars",
+    KIND_LIVE_CHANGED: "📅 Jonli dars",
     KIND_MEDIA_READY: "🎬 Media",
 }
 
@@ -91,7 +94,7 @@ _background: set[asyncio.Task[None]] = set()
 # --- creating -----------------------------------------------------------------------------
 
 
-def _enqueue_after_commit(session: AsyncSession, notification_id: int) -> None:
+def enqueue_after_commit(session: AsyncSession, notification_id: int) -> None:
     """Queue the send job only once the row is committed (a sweeper cron is the safety net)."""
 
     def _on_commit(_: Any) -> None:
@@ -152,9 +155,11 @@ async def notify_user(
     if notification_id is None:
         return None
     await session.execute(
-        insert(NotificationDelivery).values(notification_id=notification_id, user_id=user_id).on_conflict_do_nothing()
+        insert(NotificationDelivery)
+        .values(notification_id=notification_id, user_id=user_id)
+        .on_conflict_do_nothing()
     )
-    _enqueue_after_commit(session, notification_id)
+    enqueue_after_commit(session, notification_id)
     return await session.get(Notification, notification_id)
 
 
@@ -168,7 +173,10 @@ async def notify_new_lesson(session: AsyncSession, lesson_id: int) -> Notificati
         .values(
             kind=KIND_NEW_LESSON,
             title="Yangi dars",
-            body=f"🆕 Yangi dars qo‘shildi: <b>{esc(lesson.title)}</b>\n\n📚 Fanlar va kurslar bo‘limida oching.",
+            body=(
+                f"🆕 Yangi dars qo‘shildi: <b>{esc(lesson.title)}</b>\n\n"
+                "📚 Fanlar va kurslar bo‘limida oching."
+            ),
             audience_type=NotificationAudience.COURSE,
             audience={"course_id": lesson.course_id, "lesson_id": lesson.id},
             dedupe_key=f"new_lesson:{lesson.id}",
@@ -180,8 +188,34 @@ async def notify_new_lesson(session: AsyncSession, lesson_id: int) -> Notificati
     notification_id = await session.scalar(stmt)
     if notification_id is None:
         return None
-    _enqueue_after_commit(session, notification_id)
+    enqueue_after_commit(session, notification_id)
     return await session.get(Notification, notification_id)
+
+
+async def notify_live_registrants(session: AsyncSession, live_id: int, body: str) -> Notification | None:
+    """One notification to everyone registered for a live session (e.g. it was cancelled)."""
+    user_ids = list(
+        (
+            await session.scalars(
+                select(LiveSessionRegistration.user_id).where(
+                    LiveSessionRegistration.live_session_id == live_id
+                )
+            )
+        ).all()
+    )
+    if not user_ids:
+        return None
+    notification = Notification(
+        kind=KIND_LIVE_CHANGED,
+        body=body,
+        audience_type=NotificationAudience.USERS,
+        audience={"user_ids": user_ids, "live_id": live_id},
+        status=NotificationStatus.QUEUED,
+    )
+    session.add(notification)
+    await session.flush()
+    enqueue_after_commit(session, notification.id)
+    return notification
 
 
 AUDIENCE_TYPES_MANUAL = (
@@ -234,13 +268,19 @@ async def confirm_broadcast(session: AsyncSession, actor: User, notification_id:
     assert notification is not None
     await session.refresh(notification)
     await session.execute(
-        update(Notification).where(Notification.id == notification_id).values(total_count=await count_recipients(session, notification))
+        update(Notification)
+        .where(Notification.id == notification_id)
+        .values(total_count=await count_recipients(session, notification))
     )
     await log_action(
-        session, "notification.sent", actor=actor, entity_type="notification", entity_id=notification_id,
+        session,
+        "notification.sent",
+        actor=actor,
+        entity_type="notification",
+        entity_id=notification_id,
         details={"audience_type": notification.audience_type.value, "audience": notification.audience},
-    )  # fmt: skip
-    _enqueue_after_commit(session, notification_id)
+    )
+    enqueue_after_commit(session, notification_id)
     return notification
 
 
@@ -249,14 +289,18 @@ async def cancel_broadcast(session: AsyncSession, actor: User, notification_id: 
         update(Notification)
         .where(
             Notification.id == notification_id,
-            Notification.status.in_([NotificationStatus.DRAFT, NotificationStatus.QUEUED, NotificationStatus.SENDING]),
+            Notification.status.in_(
+                [NotificationStatus.DRAFT, NotificationStatus.QUEUED, NotificationStatus.SENDING]
+            ),
         )
         .values(status=NotificationStatus.CANCELLED, finished_at=utcnow())
         .returning(Notification.id)
     )
     if result.scalar_one_or_none() is None:
         raise Conflict("Xabarni bekor qilib bo‘lmaydi.")
-    await log_action(session, "notification.cancelled", actor=actor, entity_type="notification", entity_id=notification_id)
+    await log_action(
+        session, "notification.cancelled", actor=actor, entity_type="notification", entity_id=notification_id
+    )
 
 
 # --- audience -----------------------------------------------------------------------------
@@ -287,7 +331,9 @@ def recipients_query(notification: Notification) -> Select[tuple[int]]:
 
 
 async def count_recipients(session: AsyncSession, notification: Notification) -> int:
-    return await session.scalar(select(func.count()).select_from(recipients_query(notification).subquery())) or 0
+    return (
+        await session.scalar(select(func.count()).select_from(recipients_query(notification).subquery())) or 0
+    )
 
 
 async def materialize_deliveries(session: AsyncSession, notification: Notification) -> int:
@@ -403,7 +449,10 @@ async def deliver(
     """Send all pending deliveries of a notification. Idempotent: only `pending` rows are sent."""
     async with sessionmaker() as session:
         notification = await session.get(Notification, notification_id, with_for_update=True)
-        if notification is None or notification.status not in (NotificationStatus.QUEUED, NotificationStatus.SENDING):
+        if notification is None or notification.status not in (
+            NotificationStatus.QUEUED,
+            NotificationStatus.SENDING,
+        ):
             return notification.status if notification else None
         if notification.status == NotificationStatus.QUEUED:
             notification.total_count = await materialize_deliveries(session, notification)
@@ -446,7 +495,10 @@ async def deliver(
         if not batch:
             break
 
-        results = [(delivery_id, telegram_id, await send_one(bot, telegram_id, text, limiter)) for delivery_id, telegram_id in batch]
+        results = [
+            (delivery_id, telegram_id, await send_one(bot, telegram_id, text, limiter))
+            for delivery_id, telegram_id in batch
+        ]
 
         async with sessionmaker() as session:
             now = utcnow()
@@ -463,7 +515,9 @@ async def deliver(
                     )
                 )
                 if result.status == DeliveryStatus.BLOCKED:
-                    await session.execute(update(User).where(User.telegram_id == telegram_id).values(bot_blocked_at=now))
+                    await session.execute(
+                        update(User).where(User.telegram_id == telegram_id).values(bot_blocked_at=now)
+                    )
             await session.commit()
 
     async with sessionmaker() as session:
@@ -508,14 +562,18 @@ async def stuck_notification_ids(session: AsyncSession, now: datetime) -> list[i
 # --- student inbox ------------------------------------------------------------------------
 
 
-async def inbox(session: AsyncSession, user_id: int, *, limit: int = 10, offset: int = 0) -> tuple[list[Notification], int]:
+async def inbox(
+    session: AsyncSession, user_id: int, *, limit: int = 10, offset: int = 0
+) -> tuple[list[Notification], int]:
     base = (
         select(Notification)
         .join(NotificationDelivery, NotificationDelivery.notification_id == Notification.id)
         .where(NotificationDelivery.user_id == user_id, NotificationDelivery.status == DeliveryStatus.SENT)
     )
     total = await session.scalar(select(func.count()).select_from(base.subquery())) or 0
-    rows = await session.scalars(base.order_by(NotificationDelivery.sent_at.desc()).limit(limit).offset(offset))
+    rows = await session.scalars(
+        base.order_by(NotificationDelivery.sent_at.desc()).limit(limit).offset(offset)
+    )
     return list(rows.all()), total
 
 
@@ -536,14 +594,18 @@ async def get_inbox_item(session: AsyncSession, user_id: int, notification_id: i
 
 
 async def notifications_enabled(session: AsyncSession, user_id: int) -> bool:
-    value = await session.scalar(select(UserSettings.notifications_enabled).where(UserSettings.user_id == user_id))
+    value = await session.scalar(
+        select(UserSettings.notifications_enabled).where(UserSettings.user_id == user_id)
+    )
     return True if value is None else bool(value)
 
 
 async def set_notifications_enabled(session: AsyncSession, user_id: int, enabled: bool) -> None:
     stmt = insert(UserSettings).values(user_id=user_id, notifications_enabled=enabled)
     await session.execute(
-        stmt.on_conflict_do_update(index_elements=[UserSettings.user_id], set_={"notifications_enabled": enabled})
+        stmt.on_conflict_do_update(
+            index_elements=[UserSettings.user_id], set_={"notifications_enabled": enabled}
+        )
     )
 
 
