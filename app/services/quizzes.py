@@ -27,6 +27,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import (
+    AdminPermission,
     AnswerOption,
     AttemptAnswer,
     AttemptStatus,
@@ -41,6 +42,7 @@ from app.database.models import (
 )
 from app.database.models import Question as QuestionModel
 from app.services import audit, lessons
+from app.services.access import has_permission
 from app.services.errors import AccessDenied, Conflict, InvalidInput, NotFound, SubscriptionRequired
 from app.services.subscriptions import has_active_subscription
 from app.utils.time import utcnow
@@ -543,8 +545,13 @@ async def attempt_summary(session: AsyncSession, user: User, attempt_id: int) ->
     if attempt.status == AttemptStatus.IN_PROGRESS:
         raise Conflict("Test hali yakunlanmagan.")
     quiz = await get_quiz(session, attempt.quiz_id)
-    left = attempts_left(quiz.max_attempts, await attempts_used(session, user.id, quiz.id))
+    in_progress = await _in_progress(session, user.id, quiz.id)
+    finished = await attempts_used(session, user.id, quiz.id) - (1 if in_progress else 0)
+    left = attempts_left(quiz.max_attempts, finished)
     show_score, show_answers = answer_visibility(QuizResultVisibility(quiz.result_visibility), left)
+    if in_progress is not None:
+        # Never reveal answers of an old attempt while a new one is running (TZ §8.3).
+        show_answers = False
     summary = AttemptSummary(attempt, quiz, show_score, show_answers, left)
     if show_answers:
         summary.review = await attempt_review(session, attempt)
@@ -750,9 +757,16 @@ def _cycle(values: Sequence[str], current: str) -> str:
     return values[(idx + 1) % len(values)]
 
 
+def can_set_access_mode(actor: User) -> bool:
+    return has_permission(actor, AdminPermission.QUIZZES) or has_permission(actor, AdminPermission.CONTENT)
+
+
 async def cycle_quiz_option(session: AsyncSession, actor: User, quiz_id: int, option: str) -> Quiz:
     quiz, _ = await get_managed_quiz(session, actor, quiz_id)
     if option == "access_mode":
+        # Free vs paid is an admin decision (TZ §5.1.3), like lessons.set_lesson_free.
+        if not can_set_access_mode(actor):
+            raise AccessDenied("Kirish turini faqat administrator o‘zgartiradi.")
         quiz.access_mode = QuizAccessMode(_cycle([m.value for m in QuizAccessMode], quiz.access_mode))
         value: str = quiz.access_mode
     elif option == "result_visibility":
@@ -829,6 +843,18 @@ async def delete_question(session: AsyncSession, actor: User, question_id: int) 
         raise Conflict(
             "Bu savolga o‘quvchilar javob bergan. Natijalar saqlanishi uchun uni o‘chirib bo‘lmaydi."
         )
+    running = await session.scalar(
+        select(QuizAttempt.id)
+        .where(
+            QuizAttempt.quiz_id == quiz.id,
+            QuizAttempt.status == AttemptStatus.IN_PROGRESS,
+            QuizAttempt.question_order.contains([question_id]),
+        )
+        .limit(1)
+    )
+    if running is not None:
+        # Its points are already part of the running attempt's max_score.
+        raise Conflict("Bu testni hozir o‘quvchilar ishlamoqda. Savolni keyinroq o‘chiring.")
     await session.delete(question)
     await session.flush()
     if quiz.is_active and not await list_questions(session, quiz.id):

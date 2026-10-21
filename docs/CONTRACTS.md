@@ -38,6 +38,10 @@ name in this table (or ask CORE).
 | CONTENT | `app/services/{lessons,quizzes}.py`, `app/handlers/student/{catalog,lessons,video_lessons,quizzes,results}.py`, `app/handlers/admin/{content,lessons,quizzes}.py`, `app/handlers/teacher/{materials,quizzes}.py`, `app/keyboards/content*.py`, tests named `*lesson*`, `*content*`, `*quiz*` |
 | COMMERCE | `app/services/{subscriptions,media,storage,notifications,live,stats}.py`, `app/workers/**`, `app/handlers/student/{subscription,live,notifications}.py`, `app/handlers/admin/{plans,payments,notifications,live,stats}.py`, `app/web/routers/media.py`, `app/web/static/player/**`, `app/web/static/upload/**`, `app/keyboards/commerce*.py`, `scripts/backup*`, tests named `*subscription*`, `*payment*`, `*media*`, `*notification*`, `*live*`, `*stats*` |
 
+Later additions: CONTENT owns `tests/e2e/**` (bot-flow harness, reusable by others for new flows);
+AUTH owns `tests/load/**` and `docs/LOAD_TEST.md`; COMMERCE owns `scripts/**`, `docs/BACKUP.md` and
+`tests/integration/test_media_pipeline.py`; CORE owns `docs/DEPLOY.md` and `deploy/**`.
+
 New files: use the names above or prefix with your area. If unsure, ask CORE.
 
 ## 4. Menu buttons → owner

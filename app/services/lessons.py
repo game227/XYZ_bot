@@ -742,13 +742,34 @@ async def delete_node(session: AsyncSession, actor: User, kind: str, obj_id: int
 # --------------------------------------------------------------------------- materials
 
 
+async def _can_use_media(session: AsyncSession, actor: User, media: MediaFile) -> bool:
+    """Content admins: any file. Others: files they uploaded, or files already used in a
+    lesson of a course they manage."""
+    if has_permission(actor, AdminPermission.CONTENT) or media.uploaded_by_user_id == actor.id:
+        return True
+    course_ids = await manageable_course_ids(session, actor)
+    if not course_ids:
+        return False
+    linked = await session.scalar(
+        select(Lesson.id)
+        .join(LessonMedia, LessonMedia.lesson_id == Lesson.id)
+        .where(LessonMedia.media_id == media.id, Lesson.course_id.in_(course_ids))
+        .limit(1)
+    )
+    return linked is not None
+
+
 async def attach_media(
     session: AsyncSession, lesson_id: int, media_id: int, *, actor: User, caption: str | None = None
 ) -> LessonMedia:
     lesson = await get_lesson(session, lesson_id)
     await ensure_can_manage_course(session, actor, lesson.course_id)
-    if await session.get(MediaFile, media_id) is None:
+    media = await session.get(MediaFile, media_id)
+    if media is None:
         raise NotFound("Fayl topilmadi.")
+    if not await _can_use_media(session, actor, media):
+        # A teacher must not pull another course's private file into their own lesson.
+        raise AccessDenied("Bu fayldan foydalanish huquqingiz yo‘q.")
     existing = await session.scalar(
         select(LessonMedia).where(LessonMedia.lesson_id == lesson_id, LessonMedia.media_id == media_id)
     )

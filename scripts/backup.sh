@@ -3,7 +3,7 @@
 #   15 3 * * * cd /srv/xyz-telegram-bot && scripts/backup.sh >> backups/backup.log 2>&1
 #
 # - DB: pg_dump custom format → backups/db/xyz-YYYYmmdd-HHMMSS.dump (+ .sha256), kept BACKUP_KEEP_DAYS.
-# - Media: incremental mirror of the private bucket → backups/media/<bucket>/ (originals + HLS).
+# - Media: incremental mirror of the private bucket → backups/media/<bucket>/ (scripts/backup_media.py).
 # - On failure an alert goes to the superadmins (scripts/backup_alert.py) and the exit code is non-zero.
 # Copy backups/ off the server (rsync/rclone) — a backup on the same disk is not a backup.
 set -Eeuo pipefail
@@ -11,14 +11,18 @@ set -Eeuo pipefail
 cd "$(dirname "$0")/.."
 BACKUP_DIR="${BACKUP_DIR:-backups}"
 KEEP_DAYS="${BACKUP_KEEP_DAYS:-14}"
-BUCKET="${S3_BUCKET:-xyz-media}"
-MC_IMAGE="${MC_IMAGE:-minio/mc}"  # pin a RELEASE tag in production
 COMPOSE=(docker compose)
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 
-alert() {
-  "${COMPOSE[@]}" run --rm --no-deps -T bot python scripts/backup_alert.py "$1" >/dev/null 2>&1 || true
+# App Python: the project venv when present (dev / host install), else the app image.
+run_py() {
+  if [[ -x .venv/bin/python ]]; then
+    PYTHONPATH=. .venv/bin/python "$@"
+  else
+    "${COMPOSE[@]}" run --rm --no-deps -T -v "$(pwd)/$BACKUP_DIR:/srv/$BACKUP_DIR" -e PYTHONPATH=. bot python "$@"
+  fi
 }
+alert() { [[ "${BACKUP_ALERTS:-1}" == 0 ]] || run_py scripts/backup_alert.py "$1" >/dev/null 2>&1 || true; }
 trap 'alert "❌ Zaxira nusxa olinmadi (${STAMP}). Serverdagi backups/backup.log ni tekshiring."' ERR
 
 umask 077
@@ -32,14 +36,7 @@ sha256sum "$DUMP" > "$DUMP.sha256"
 test -s "$DUMP"
 
 echo "[$STAMP] media mirror"
-MINIO_CID="$("${COMPOSE[@]}" ps -q minio)"
-NETWORK="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' "$MINIO_CID")"
-MINIO_USER="$("${COMPOSE[@]}" exec -T minio printenv MINIO_ROOT_USER)"
-MINIO_PASS="$("${COMPOSE[@]}" exec -T minio printenv MINIO_ROOT_PASSWORD)"
-docker run --rm --network "$NETWORK" \
-  -e "MC_HOST_src=http://${MINIO_USER}:${MINIO_PASS}@minio:9000" \
-  -v "$(pwd)/$BACKUP_DIR/media:/backup" \
-  "$MC_IMAGE" mirror --overwrite --preserve "src/$BUCKET" "/backup/$BUCKET" >/dev/null
+run_py scripts/backup_media.py "$BACKUP_DIR/media"
 
 echo "[$STAMP] retention: removing DB dumps older than $KEEP_DAYS days"
 find "$BACKUP_DIR/db" -name 'xyz-*.dump*' -mtime "+$KEEP_DAYS" -delete

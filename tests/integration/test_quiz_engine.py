@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from app.database.models import AttemptStatus, QuizAccessMode
+from app.database.models import AttemptStatus, QuizAccessMode, QuizResultVisibility
 from app.handlers.student import quizzes as quiz_screens
 from app.services import lessons, quizzes
 from app.services.errors import AccessDenied, Conflict, SubscriptionRequired
@@ -169,3 +169,87 @@ async def test_rendered_question_does_not_reveal_correct_option(session):
     after = _payload(*(await quiz_screens.render_question(session, state, attempt.id, user))[:2])
     assert before == after
     assert "✔" not in before and "to‘g‘ri javob" not in before.lower()
+
+
+# ------------------------------------------------- review fixes (COMMERCE cross-review)
+
+
+async def _teacher_with_session(session, course_id: int, monkeypatch, **rights: bool):
+    from app.database.models import TeacherCourseAssignment, UserRole
+    from app.services import teacher_sessions
+    from tests.teacher_helpers import make_teacher, use_cheap_hasher
+
+    use_cheap_hasher(monkeypatch)
+    user = await make_student(session)
+    user.role = UserRole.TEACHER
+    account = await make_teacher(session, login=f"t{user.telegram_id}", user=user)
+    session.add(TeacherCourseAssignment(teacher_id=account.id, course_id=course_id, **rights))
+    await session.flush()
+    await teacher_sessions.create_session(session, account, user)
+    return user
+
+
+@pytest.mark.parametrize(
+    "visibility", [QuizResultVisibility.SCORE_AND_ANSWERS, QuizResultVisibility.ANSWERS_AFTER_LAST_ATTEMPT]
+)
+async def test_old_review_hidden_while_next_attempt_runs(session, visibility):
+    topic = await make_tree(session)
+    _, paid = await make_lessons(session, topic, paid=1)
+    quiz, _ = await make_quiz(session, paid[0], questions=1, max_attempts=2, result_visibility=visibility)
+    user = await make_student(session)
+    await subscribe(session, user)
+
+    first = await quizzes.start_or_resume(session, user, quiz.id)
+    await _answer(session, user, first, correct=True)
+    await quizzes.start_or_resume(session, user, quiz.id)  # attempt 2 now in progress
+
+    summary = await quizzes.attempt_summary(session, user, first.id)
+    assert summary.show_answers is False and summary.review == []
+    assert summary.attempts_left == 1  # counted from finished attempts only
+
+
+async def test_answers_after_last_attempt_shown_once_all_used(session):
+    topic = await make_tree(session)
+    _, paid = await make_lessons(session, topic, paid=1)
+    quiz, _ = await make_quiz(
+        session,
+        paid[0],
+        questions=1,
+        max_attempts=2,
+        result_visibility=QuizResultVisibility.ANSWERS_AFTER_LAST_ATTEMPT,
+    )
+    user = await make_student(session)
+    await subscribe(session, user)
+    attempts = []
+    for _ in range(2):
+        attempt = await quizzes.start_or_resume(session, user, quiz.id)
+        await _answer(session, user, attempt, correct=False)
+        attempts.append(attempt)
+    assert (await quizzes.attempt_summary(session, user, attempts[0].id)).show_answers is True
+
+
+async def test_teacher_cannot_change_quiz_access_mode(session, monkeypatch):
+    topic = await make_tree(session)
+    _, paid = await make_lessons(session, topic, paid=1)
+    quiz, _ = await make_quiz(session, paid[0])
+    teacher = await _teacher_with_session(session, paid[0].course_id, monkeypatch, can_manage_quizzes=True)
+
+    await quizzes.cycle_quiz_option(session, teacher, quiz.id, "result_visibility")  # allowed
+    with pytest.raises(AccessDenied):
+        await quizzes.cycle_quiz_option(session, teacher, quiz.id, "access_mode")
+    assert quiz.access_mode == QuizAccessMode.INHERIT
+
+
+async def test_question_of_running_attempt_cannot_be_deleted(session, make_user):
+    from app.database.models import AdminPermission, UserRole
+
+    topic = await make_tree(session)
+    _, paid = await make_lessons(session, topic, paid=1)
+    quiz, questions = await make_quiz(session, paid[0], questions=2)
+    admin = await make_user(role=UserRole.ADMIN, permissions=[AdminPermission.QUIZZES.value])
+    user = await make_student(session)
+    await subscribe(session, user)
+    await quizzes.start_or_resume(session, user, quiz.id)  # nothing answered yet
+
+    with pytest.raises(Conflict):
+        await quizzes.delete_question(session, admin, questions[1].id)

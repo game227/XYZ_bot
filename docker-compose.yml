@@ -1,18 +1,30 @@
 name: xyz-bot
 
+# Development: infra only, the app runs from the venv (see README):
+#   docker compose up -d postgres redis minio
+# Production (VPS): everything, behind Caddy with automatic HTTPS (see docs/DEPLOY.md):
+#   docker compose --profile app up -d --build
+
 x-app: &app
   build: .
+  image: xyz-bot-app
   env_file: .env
   environment:
     DATABASE_URL: postgresql+asyncpg://xyz:${POSTGRES_PASSWORD:-xyz}@postgres:5432/xyz
     REDIS_URL: redis://redis:6379/0
-    S3_ENDPOINT_URL: http://minio:9000
+    # Set S3_ENDPOINT_URL in .env for an external S3; defaults to the bundled MinIO.
+    S3_ENDPOINT_URL: ${S3_ENDPOINT_URL_DOCKER:-http://minio:9000}
+  restart: unless-stopped
+  profiles: ["app"]
+
+x-after-migrate: &after-migrate
   depends_on:
+    migrate:
+      condition: service_completed_successfully
     postgres:
       condition: service_healthy
     redis:
       condition: service_healthy
-  restart: unless-stopped
 
 services:
   postgres:
@@ -42,7 +54,7 @@ services:
 
   minio:
     # MinIO no longer publishes free images (Docker Hub / quay). Development uses the frozen
-    # Bitnami legacy build; production should use a managed S3 or a maintained S3-compatible server.
+    # Bitnami legacy build; production should use a managed S3 (see docs/DEPLOY.md).
     image: bitnamilegacy/minio:2025.7.23-debian-12-r5
     environment:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
@@ -56,32 +68,50 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # App services. For local development you can run only the infra above:
-  #   docker compose up -d postgres redis minio
-  # and start the app from the venv (see README).
   migrate:
     <<: *app
     command: ["alembic", "upgrade", "head"]
     restart: "no"
-    profiles: ["app"]
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   bot:
-    <<: *app
+    <<: [*app, *after-migrate]
     command: ["python", "-m", "app.main"]
-    profiles: ["app"]
 
   web:
-    <<: *app
-    command: ["uvicorn", "app.web.app:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers"]
+    <<: [*app, *after-migrate]
+    command: ["uvicorn", "app.web.app:app", "--host", "0.0.0.0", "--port", "8080",
+              "--proxy-headers", "--forwarded-allow-ips", "*"]
     ports: ["127.0.0.1:8080:8080"]
-    profiles: ["app"]
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/healthz"]
+      interval: 15s
+      retries: 5
 
   worker:
-    <<: *app
+    <<: [*app, *after-migrate]
     command: ["arq", "app.workers.main.WorkerSettings"]
+
+  caddy:
+    image: caddy:2.10.0-alpine
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
     profiles: ["app"]
 
 volumes:
   pgdata:
   redisdata:
   miniodata:
+  caddydata:
+  caddyconfig:

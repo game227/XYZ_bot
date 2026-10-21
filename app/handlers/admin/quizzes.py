@@ -158,12 +158,10 @@ async def render_quiz(session: AsyncSession, user: User, quiz_id: int) -> tuple[
     ]
     for flag, name in FLAG_NAMES.items():
         rows.append([btn(f"{_on(getattr(quiz, flag))} {name}", CtQe(action="flag", id=quiz.id, arg=flag))])
-    rows.append(
-        [
-            btn("🔐 Kirish turi", CtQe(action="cycle", id=quiz.id, arg="access_mode")),
-            btn("📊 Natija ko‘rinishi", CtQe(action="cycle", id=quiz.id, arg="result_visibility")),
-        ]
-    )
+    settings_row = [btn("📊 Natija ko‘rinishi", CtQe(action="cycle", id=quiz.id, arg="result_visibility"))]
+    if quizzes.can_set_access_mode(user):
+        settings_row.insert(0, btn("🔐 Kirish turi", CtQe(action="cycle", id=quiz.id, arg="access_mode")))
+    rows.append(settings_row)
     rows.append(
         [
             btn(

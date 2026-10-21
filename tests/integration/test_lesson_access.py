@@ -184,3 +184,25 @@ async def test_parallel_opens_of_same_lesson_consume_once(committing_sessionmake
     )
     assert sorted(results) == ["free"] + ["reopen"] * 5
     assert await _consumed(committing_sessionmaker, user_id) == 1
+
+
+async def test_teacher_cannot_attach_another_courses_media(session, monkeypatch):
+    from app.database.models import LessonMedia, MediaFile, MediaKind, MediaStatus
+    from tests.integration.test_quiz_engine import _teacher_with_session
+
+    own_topic, other_topic = await make_tree(session), await make_tree(session)
+    own, _ = await make_lessons(session, own_topic, free=1)
+    other, _ = await make_lessons(session, other_topic, free=1)
+    foreign = MediaFile(kind=MediaKind.VIDEO, status=MediaStatus.READY, storage_key="v/foreign.mp4")
+    mine_media = MediaFile(kind=MediaKind.PDF, status=MediaStatus.READY, storage_key="d/own.pdf")
+    session.add_all([foreign, mine_media])
+    await session.flush()
+    session.add(LessonMedia(lesson_id=other[0].id, media_id=foreign.id))
+    teacher = await _teacher_with_session(session, own[0].course_id, monkeypatch, can_manage_content=True)
+    mine_media.uploaded_by_user_id = teacher.id
+    await session.flush()
+
+    with pytest.raises(AccessDenied):
+        await lessons.attach_media(session, own[0].id, foreign.id, actor=teacher)
+    link = await lessons.attach_media(session, own[0].id, mine_media.id, actor=teacher)
+    assert link.media_id == mine_media.id

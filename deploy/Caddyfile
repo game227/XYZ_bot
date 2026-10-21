@@ -1,0 +1,15 @@
+# Public HTTPS entry point for the web service (Telegram Mini App + protected video player).
+# Caddy obtains and renews the TLS certificate for $DOMAIN automatically.
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# Only the web service is exposed; bot and worker need no inbound traffic.
+	reverse_proxy web:8080
+}
