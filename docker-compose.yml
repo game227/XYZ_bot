@@ -1,0 +1,81 @@
+name: xyz-bot
+
+x-app: &app
+  build: .
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql+asyncpg://xyz:${POSTGRES_PASSWORD:-xyz}@postgres:5432/xyz
+    REDIS_URL: redis://redis:6379/0
+    S3_ENDPOINT_URL: http://minio:9000
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: xyz
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xyz}
+      POSTGRES_DB: xyz
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xyz -d xyz"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["127.0.0.1:6379:6379"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+    ports: ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
+    volumes: [miniodata:/data]
+    restart: unless-stopped
+
+  # App services. For local development you can run only the infra above:
+  #   docker compose up -d postgres redis minio
+  # and start the app from the venv (see README).
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    profiles: ["app"]
+
+  bot:
+    <<: *app
+    command: ["python", "-m", "app.main"]
+    profiles: ["app"]
+
+  web:
+    <<: *app
+    command: ["uvicorn", "app.web.app:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers"]
+    ports: ["127.0.0.1:8080:8080"]
+    profiles: ["app"]
+
+  worker:
+    <<: *app
+    command: ["arq", "app.workers.main.WorkerSettings"]
+    profiles: ["app"]
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
