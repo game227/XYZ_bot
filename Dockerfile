@@ -6,16 +6,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/srv
 
-# ffmpeg: HLS transcoding in the worker. curl: container health checks.
+# postgresql-client: pg_dump / pg_restore for scripts/backup*.sh
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg curl \
+    && apt-get install -y --no-install-recommends postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 1000 app
 WORKDIR /srv
 
-# Dependencies first (better layer caching); the app itself runs from /srv via PYTHONPATH,
-# so static files and every entry point (python -m, uvicorn, arq) use the same code.
+# The app runs from /srv via PYTHONPATH, so every entry point (python -m, arq) uses the same code.
 COPY pyproject.toml README.md ./
 COPY app ./app
 RUN pip install .

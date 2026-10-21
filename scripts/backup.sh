@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# PostgreSQL + media backup (TZ §19). Run from the project root on the Docker host, e.g. cron:
+# PostgreSQL backup (TZ §19). Run from the project root on the Docker host, e.g. cron:
 #   15 3 * * * cd /srv/xyz-telegram-bot && scripts/backup.sh >> backups/backup.log 2>&1
 #
 # - DB: pg_dump custom format → backups/db/xyz-YYYYmmdd-HHMMSS.dump (+ .sha256), kept BACKUP_KEEP_DAYS.
-# - Media: incremental mirror of the private bucket → backups/media/<bucket>/ (scripts/backup_media.py).
+# - Lesson files live on Telegram's servers (only their file_id is in the DB), so the DB dump is enough.
 # - On failure an alert goes to the superadmins (scripts/backup_alert.py) and the exit code is non-zero.
 # Copy backups/ off the server (rsync/rclone) — a backup on the same disk is not a backup.
 set -Eeuo pipefail
@@ -26,7 +26,7 @@ alert() { [[ "${BACKUP_ALERTS:-1}" == 0 ]] || run_py scripts/backup_alert.py "$1
 trap 'alert "❌ Zaxira nusxa olinmadi (${STAMP}). Serverdagi backups/backup.log ni tekshiring."' ERR
 
 umask 077
-mkdir -p "$BACKUP_DIR/db" "$BACKUP_DIR/media"
+mkdir -p "$BACKUP_DIR/db"
 
 echo "[$STAMP] database dump"
 DUMP="$BACKUP_DIR/db/xyz-$STAMP.dump"
@@ -34,9 +34,6 @@ DUMP="$BACKUP_DIR/db/xyz-$STAMP.dump"
 mv "$DUMP.part" "$DUMP"
 sha256sum "$DUMP" > "$DUMP.sha256"
 test -s "$DUMP"
-
-echo "[$STAMP] media mirror"
-run_py scripts/backup_media.py "$BACKUP_DIR/media"
 
 echo "[$STAMP] retention: removing DB dumps older than $KEEP_DAYS days"
 find "$BACKUP_DIR/db" -name 'xyz-*.dump*' -mtime "+$KEEP_DAYS" -delete

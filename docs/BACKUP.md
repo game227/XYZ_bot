@@ -1,19 +1,17 @@
 # Zaxira nusxa va tiklash (TZ §19, qabul mezoni 24)
 
-Botning ikki xil ma’lumoti zaxiralanadi:
+Zaxiralanadigan ma’lumot — PostgreSQL bazasi:
 
 | Nima | Qayerda | Qanday |
 |---|---|---|
 | PostgreSQL (`xyz`) | docker `postgres` | `pg_dump -Fc` → `backups/db/xyz-YYYYmmdd-HHMMSS.dump` + `.sha256` |
-| Media (S3/MinIO bucket) | docker `minio`, bucket `S3_BUCKET` | inkremental ko‘chirma → `backups/media/<bucket>/` (originallar + HLS) |
 
-Redis zaxiralanmaydi: unda faqat vaqtinchalik holatlar (FSM, navbat, login limiti, yuklash sessiyalari) bor.
+Dars fayllari (video, PDF, hujjatlar) Telegram serverlarida turadi; bazada faqat ularning `file_id` si bor, shuning uchun baza zaxirasi yetarli. Redis zaxiralanmaydi: unda faqat vaqtinchalik holatlar (FSM, navbat, login limiti) bor.
 
 Skriptlar (`scripts/`):
 
-- `backup.sh` — DB dump + media ko‘chirmasi + eski dumplarni o‘chirish.
+- `backup.sh` — DB dump + eski dumplarni o‘chirish.
 - `backup_restore_check.sh` — oxirgi dumpni vaqtinchalik `xyz_restore_check` bazasiga tiklab tekshiradi, keyin o‘chiradi.
-- `backup_media.py` — bucket ↔ papka (zaxiralash va `--restore`).
 - `backup_alert.py` — xatolikda superadminlarga Telegram xabari.
 
 ## Jadval (cron, server foydalanuvchisi `docker` guruhida bo‘lishi kerak)
@@ -30,8 +28,6 @@ Skriptlar (`scripts/`):
 ## Saqlash muddati
 
 - DB dumplari: `BACKUP_KEEP_DAYS` (standart 14 kun) serverda; serverdan tashqarida kamida 30 kunlik + oyning 1-kunidagi dumplar 12 oy.
-- Media: inkremental ko‘chirma (o‘zgarmagan fayllar qayta yuklanmaydi). O‘chirilgan media zaxirada qoladi; kerak bo‘lsa vaqti-vaqti bilan qo‘lda tozalanadi.
-- Tavsiya: bucket uchun lifecycle qoidasi — tugallanmagan multipart yuklashlarni 7 kundan keyin bekor qilish.
 
 ## Serverdan tashqari nusxa
 
@@ -58,7 +54,7 @@ COMPARE_SOURCE=1 scripts/backup_restore_check.sh       # + jonli baza bilan sxem
 
 ### Haqiqiy halokatdan keyin: PostgreSQL
 
-1. Ilovani to‘xtating (DB ga yozmasin): `docker compose stop bot web worker`.
+1. Ilovani to‘xtating (DB ga yozmasin): `docker compose stop bot worker`.
 2. Dumpning butunligini tekshiring: `sha256sum -c backups/db/xyz-....dump.sha256`.
 3. Yangi bazaga tiklang (eski bazani darhol o‘chirmang):
    ```bash
@@ -72,22 +68,12 @@ COMPARE_SOURCE=1 scripts/backup_restore_check.sh       # + jonli baza bilan sxem
      -c 'ALTER DATABASE xyz RENAME TO xyz_broken' -c 'ALTER DATABASE xyz_restored RENAME TO xyz'
    ```
 6. Migratsiyalar: `docker compose run --rm migrate` (dump eskiroq versiyada bo‘lsa, `alembic upgrade head`).
-7. Ilovani yoqing: `docker compose start bot web worker`. Hammasi joyida bo‘lgach, `xyz_broken` ni o‘chiring.
-
-### Media
-
-```bash
-# backups/media/<bucket>/ → bucket (yo‘q yoki hajmi farq qiladigan fayllar yuklanadi)
-PYTHONPATH=. .venv/bin/python scripts/backup_media.py --restore backups/media/xyz-media
-# boshqa bucketga: --bucket NOM
-```
-
-HLS kalitlari (`media_files.hls_aes_key`) bazada saqlanadi, segmentlar esa bucketda. Videolar ijro etilishi uchun DB va media bir-biriga mos davrdan tiklanishi kerak. Media inkremental, shuning uchun oxirgi ko‘chirma har doim eng yangi DB dumpini qamraydi.
+7. Ilovani yoqing: `docker compose start bot worker`. Hammasi joyida bo‘lgach, `xyz_broken` ni o‘chiring.
 
 ### Tiklash maqsadlari
 
 - RPO (yo‘qotilishi mumkin bo‘lgan ma’lumot): kundalik zaxirada ≤ 24 soat. Kerak bo‘lsa cron tez-tez qo‘yiladi yoki WAL arxivlash (pgBackRest) qo‘shiladi.
-- RTO (tiklash vaqti): joriy hajmda bir necha daqiqa; vaqt asosan media hajmiga bog‘liq.
+- RTO (tiklash vaqti): joriy hajmda bir necha daqiqa.
 
 ## Sinov natijalari (drill)
 
@@ -100,6 +86,8 @@ HLS kalitlari (`media_files.hls_aes_key`) bazada saqlanadi, segmentlar esa bucke
 | `COMPARE_SOURCE=1 scripts/backup_restore_check.sh` | ✅ sha256 mos; `xyz_restore_check` ga tiklandi; alembic `0001`, 31 jadval; jadvallar, ustunlar va alembic manba bilan bir xil; 31 jadvalning hammasida qatorlar soni mos (`users`=1, `user_settings`=1, `alembic_version`=1, qolganlari 0) |
 | Vaqtinchalik baza o‘chirildi | ✅ `xyz_restore_check` qolmadi |
 | `backup_media.py --restore` → vaqtinchalik `xyz-restore-check` bucket | ✅ 1/1 obyekt, kalitlar va hajmlar bir xil; bucket o‘chirildi |
+
+Eslatma: bu drill bot faqat Telegram rejimiga o‘tishidan oldin o‘tkazilgan (o‘sha paytda media MinIO'da edi). Endi media zaxirasi kerak emas; DB qismi o‘zgarmagan.
 
 Sinov paytida `xyz` bazasi faqat o‘qildi (`pg_dump` va `SELECT count(*)`).
 

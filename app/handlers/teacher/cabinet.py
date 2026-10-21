@@ -2,11 +2,16 @@
 
 Every handler calls `require_teacher` (via `_ctx`) before touching any data: the session is
 read from the DB on every update, so expiry / admin revocation / logout take effect on the
-very next button press. Login itself happens only in the Mini App (no password in chat).
+very next button press: after 24h (or logout / admin revoke) nothing works until the teacher
+logs in again. Login happens in the chat; the password messages are deleted at once.
 """
+
+import time
 
 from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,9 +28,9 @@ from app.database.models import (
     User,
 )
 from app.keyboards import menus
-from app.keyboards.auth import AuCabinetCb, chats_keyboard, login_keyboard, pager_row
-from app.services import chat, teacher_sessions
-from app.services.errors import TeacherSessionRequired
+from app.keyboards.auth import AuCabinetCb, pager_row
+from app.services import auth, teacher_sessions
+from app.services.errors import ServiceError, TeacherSessionRequired
 from app.services.teacher_sessions import TeacherContext
 from app.utils.text import esc, truncate
 from app.utils.time import fmt_date, fmt_dt
@@ -34,9 +39,26 @@ router = Router(name="teacher.cabinet")
 
 PAGE = 10
 FINISHED_STATUSES = (AttemptStatus.COMPLETED, AttemptStatus.EXPIRED, AttemptStatus.INTERRUPTED)
-NO_HTTPS_HINT = (
-    "\n\n⚠️ Kirish oynasi faqat HTTPS manzil bilan ishlaydi (WEB_BASE_URL). Administratorga murojaat qiling."
-)
+
+# Temporary password between "first login" and "new password" steps: process memory only,
+# never Redis/DB, dropped after PENDING_TTL seconds.
+PENDING_TTL = 300
+_pending_first_login: dict[int, tuple[str, str, float]] = {}
+
+
+class AuLogin(StatesGroup):
+    login = State()
+    password = State()
+    new_password = State()
+
+
+class AuPassword(StatesGroup):
+    current = State()
+    new = State()
+
+
+# Current password between the two steps of a voluntary change: process memory only.
+_pending_change: dict[int, tuple[str, float]] = {}
 
 
 async def _relogin(event: Message | CallbackQuery, text: str | None = None) -> None:
@@ -64,7 +86,7 @@ async def _ctx(event: Message | CallbackQuery, session: AsyncSession, user: User
 
 
 @router.message(F.text.in_({menus.BTN_TEACHER_ENTRY, menus.BTN_TEACHER_MENU, menus.BTN_T_LOGIN}))
-async def cabinet_entry(message: Message, session: AsyncSession, user: User) -> None:
+async def cabinet_entry(message: Message, session: AsyncSession, user: User, state: FSMContext) -> None:
     ctx = await teacher_sessions.get_active_context(session, user.telegram_id)
     if ctx is not None and ctx.teacher.user_id == user.id:
         await message.answer(
@@ -73,16 +95,82 @@ async def cabinet_entry(message: Message, session: AsyncSession, user: User) -> 
             reply_markup=menus.teacher_menu(logged_in=True),
         )
         return
-    await message.answer("👨‍🏫 O‘qituvchi kabineti", reply_markup=menus.teacher_menu(logged_in=False))
-    text = (
-        "🔐 Kabinetga kirish uchun quyidagi tugma orqali kirish oynasini oching va login hamda "
-        "parolingizni kiriting.\n\nXavfsizlik uchun parol bot chatiga yozilmaydi. "
-        "Sessiya 24 soat amal qiladi; muddat tugagach qayta kirish kerak bo‘ladi."
+    await state.set_state(AuLogin.login)
+    await message.answer(
+        "🔐 O‘qituvchi kabinetiga kirish.\n\nLoginingizni yuboring (bekor qilish: /menu).",
+        reply_markup=menus.teacher_menu(logged_in=False),
     )
-    keyboard = login_keyboard()
-    if keyboard is None:
-        text += NO_HTTPS_HINT
-    await message.answer(text, reply_markup=keyboard)
+
+
+async def _delete_secret(message: Message) -> None:
+    try:
+        await message.delete()
+    except Exception:  # noqa: BLE001 - e.g. already deleted
+        pass
+
+
+@router.message(AuLogin.login, F.text)
+async def login_step(message: Message, state: FSMContext) -> None:
+    await state.update_data(au_login=(message.text or "").strip()[:64])
+    await state.set_state(AuLogin.password)
+    await message.answer("Parolni yuboring. Xavfsizlik uchun parol xabari darhol o‘chiriladi.")
+
+
+async def _finish_login(message: Message, state: FSMContext, ctx: TeacherContext) -> None:
+    await state.clear()
+    await message.answer(
+        f"✅ Xush kelibsiz, <b>{esc(ctx.teacher.full_name)}</b>!\n"
+        f"Sessiya <b>{fmt_dt(ctx.session.expires_at)}</b> gacha amal qiladi. Shundan so‘ng "
+        "login va parol qayta so‘raladi.",
+        reply_markup=menus.teacher_menu(logged_in=True),
+    )
+
+
+@router.message(AuLogin.password, F.text)
+async def password_step(message: Message, session: AsyncSession, user: User, state: FSMContext) -> None:
+    password = message.text or ""
+    await _delete_secret(message)
+    login = (await state.get_data()).get("au_login", "")
+    try:
+        result = await auth.login(session, user=user, login=login, password=password)
+    except auth.PasswordChangeRequired:
+        _pending_first_login[user.telegram_id] = (login, password, time.monotonic() + PENDING_TTL)
+        await state.set_state(AuLogin.new_password)
+        await message.answer(
+            "Birinchi kirish: vaqtinchalik parolni almashtiring.\n"
+            f"Yangi parolni yuboring (kamida {auth.PASSWORD_MIN_LENGTH} belgi, harf va raqam)."
+        )
+        return
+    except ServiceError as exc:
+        await state.set_state(AuLogin.login)
+        await message.answer(f"❌ {exc.user_message}\n\nLoginni qaytadan yuboring yoki /menu.")
+        return
+    await _finish_login(message, state, result.context)
+
+
+@router.message(AuLogin.new_password, F.text)
+async def new_password_step(message: Message, session: AsyncSession, user: User, state: FSMContext) -> None:
+    new_password = message.text or ""
+    await _delete_secret(message)
+    pending = _pending_first_login.pop(user.telegram_id, None)
+    if pending is None or pending[2] < time.monotonic():
+        await state.set_state(AuLogin.login)
+        await message.answer("Vaqt tugadi. Loginni qaytadan yuboring.")
+        return
+    login, password, _ = pending
+    try:
+        result = await auth.login(
+            session, user=user, login=login, password=password, new_password=new_password
+        )
+    except ServiceError as exc:
+        if not isinstance(exc, auth.LoginFailed):
+            _pending_first_login[user.telegram_id] = pending
+            await message.answer(f"❌ {exc.user_message}\n\nBoshqa yangi parol yuboring.")
+            return
+        await state.set_state(AuLogin.login)
+        await message.answer(f"❌ {exc.user_message}\n\nLoginni qaytadan yuboring.")
+        return
+    await _finish_login(message, state, result.context)
 
 
 @router.message(Command("logout"))
@@ -90,11 +178,67 @@ async def cabinet_entry(message: Message, session: AsyncSession, user: User) -> 
 async def cmd_logout(message: Message, session: AsyncSession, user: User) -> None:
     if await teacher_sessions.logout(session, user):
         await message.answer(
-            "🔒 Sessiya yakunlandi. Kabinet, chatlar va o‘quvchilar ma’lumotlari yopildi.",
+            "🔒 Sessiya yakunlandi. Kabinetga qayta kirish uchun login va parol kerak bo‘ladi.",
             reply_markup=menus.teacher_menu(logged_in=False),
         )
     else:
         await message.answer("Faol o‘qituvchi sessiyasi yo‘q.")
+
+
+@router.message(F.text == menus.BTN_T_PASSWORD)
+async def password_change_start(
+    message: Message, session: AsyncSession, user: User, state: FSMContext
+) -> None:
+    if await _ctx(message, session, user) is None:
+        return
+    await state.set_state(AuPassword.current)
+    await message.answer("🔑 Joriy parolingizni yuboring (xabar darhol o‘chiriladi). Bekor qilish: /menu")
+
+
+@router.message(AuPassword.current, F.text)
+async def password_change_current(
+    message: Message, session: AsyncSession, user: User, state: FSMContext
+) -> None:
+    current = message.text or ""
+    await _delete_secret(message)
+    if await _ctx(message, session, user) is None:
+        await state.clear()
+        return
+    _pending_change[user.telegram_id] = (current, time.monotonic() + PENDING_TTL)
+    await state.set_state(AuPassword.new)
+    await message.answer(
+        f"Yangi parolni yuboring (kamida {auth.PASSWORD_MIN_LENGTH} belgi, harf va raqam). "
+        "Xabar darhol o‘chiriladi."
+    )
+
+
+@router.message(AuPassword.new, F.text)
+async def password_change_new(message: Message, session: AsyncSession, user: User, state: FSMContext) -> None:
+    new_password = message.text or ""
+    await _delete_secret(message)
+    pending = _pending_change.pop(user.telegram_id, None)
+    ctx = await _ctx(message, session, user)
+    if ctx is None:
+        await state.clear()
+        return
+    if pending is None or pending[1] < time.monotonic():
+        await state.clear()
+        await message.answer("Vaqt tugadi. «🔑 Parolni almashtirish» ni qaytadan bosing.")
+        return
+    try:
+        result = await auth.change_password(
+            session, ctx, user, current_password=pending[0], new_password=new_password
+        )
+    except ServiceError as exc:
+        await state.clear()
+        await message.answer(f"❌ {exc.user_message}\n\n«🔑 Parolni almashtirish» ni qaytadan bosing.")
+        return
+    await state.clear()
+    await message.answer(
+        "✅ Parol almashtirildi. Yangi sessiya "
+        f"<b>{fmt_dt(result.context.session.expires_at)}</b> gacha amal qiladi.",
+        reply_markup=menus.teacher_menu(logged_in=True),
+    )
 
 
 # --------------------------------------------------------------------------- my courses
@@ -140,25 +284,6 @@ async def my_courses(message: Message, session: AsyncSession, user: User) -> Non
         status = "" if course.is_active else " (nofaol)"
         lines.append(f"• <b>{esc(course.title)}</b>{status}\n   Ruxsatlar: {allowed}")
     await message.answer("\n".join(lines))
-
-
-# --------------------------------------------------------------------------- chats
-
-
-@router.message(F.text == menus.BTN_T_CHATS)
-async def chats_entry(message: Message, session: AsyncSession, user: User) -> None:
-    ctx = await _ctx(message, session, user)
-    if ctx is None:
-        return
-    unread = await chat.unread_threads_count(session, ctx)
-    text = (
-        "💬 Yozishmalar faqat kabinet oynasida ko‘rsatiladi va sessiya tugashi bilan yopiladi."
-        f"\nO‘qilmagan suhbatlar: <b>{unread}</b>"
-    )
-    keyboard = chats_keyboard()
-    if keyboard is None:
-        text += NO_HTTPS_HINT
-    await message.answer(text, reply_markup=keyboard)
 
 
 # --------------------------------------------------------------------------- students

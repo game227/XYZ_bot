@@ -4,13 +4,14 @@ Need PostgreSQL (TEST_DATABASE_URL); skipped otherwise. Telegram is never called
 effects use NullBot, bot handlers get AsyncMock events.
 """
 
-from collections.abc import AsyncIterator
 from datetime import timedelta
 from unittest.mock import AsyncMock
 
-import httpx
 import pytest
-import pytest_asyncio
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import Message
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,9 +25,10 @@ from app.database.models import (
     UserRole,
 )
 from app.handlers.teacher import cabinet
+from app.handlers.teacher import chats as teacher_chats
 from app.keyboards.auth import AuCabinetCb
 from app.services import auth, chat, teacher_sessions
-from app.services.errors import AccessDenied, TeacherSessionRequired
+from app.services.errors import AccessDenied, NotFound, TeacherSessionRequired
 from app.utils.time import utcnow
 from tests.teacher_helpers import (
     TEACHER_PASSWORD,
@@ -35,7 +37,6 @@ from tests.teacher_helpers import (
     make_course,
     make_limiter,
     make_teacher,
-    sign_init_data,
     use_cheap_hasher,
 )
 
@@ -103,8 +104,7 @@ async def test_session_expires_after_24h_and_activity_does_not_extend(session, m
 
     # Heavy activity during the day never moves expires_at.
     for hours in (1, 5, 12, 23):
-        ctx = await teacher_sessions.require_teacher(session, user, now=created + timedelta(hours=hours))
-        await teacher_sessions.rotate_token(session, ctx)
+        await teacher_sessions.require_teacher(session, user, now=created + timedelta(hours=hours))
     await session.refresh(result.context.session)
     assert result.context.session.expires_at == expires
 
@@ -125,8 +125,6 @@ async def test_admin_revoke_is_immediate(session, make_user) -> None:
     assert revoked is not None and revoked.end_reason == TeacherSessionEndReason.ADMIN_REVOKED
     with pytest.raises(TeacherSessionRequired):
         await teacher_sessions.require_teacher(session, user)
-    with pytest.raises(TeacherSessionRequired):
-        await teacher_sessions.require_teacher_token(session, result.token, user)
     assert await teacher_sessions.revoke_session(session, result.context.session.id, actor=admin) is None
     actions = (await session.scalars(select(AdminAuditLog.action))).all()
     assert "teacher_session.revoked" in actions
@@ -148,11 +146,7 @@ async def test_new_login_replaces_old_session(session, make_user) -> None:
     await make_teacher(session)
     first = await _login(session, user)
     second = await _login(session, user)
-    with pytest.raises(TeacherSessionRequired):
-        await teacher_sessions.require_teacher_token(session, first.token, user)
-    assert (await teacher_sessions.require_teacher_token(session, second.token, user)).session.id == (
-        second.context.session.id
-    )
+    assert (await teacher_sessions.require_teacher(session, user)).session.id == second.context.session.id
     await session.refresh(first.context.session)
     assert first.context.session.end_reason == TeacherSessionEndReason.REPLACED
     active = await session.scalar(
@@ -167,15 +161,9 @@ async def test_session_bound_to_telegram_user(session, make_user) -> None:
     user = await make_user()
     other = await make_user()
     await make_teacher(session)
-    result = await _login(session, user)
+    await _login(session, user)
     with pytest.raises(TeacherSessionRequired):
         await teacher_sessions.require_teacher(session, other)
-    with pytest.raises(TeacherSessionRequired):
-        await teacher_sessions.require_teacher_token(session, result.token, other)
-    with pytest.raises(TeacherSessionRequired):
-        await teacher_sessions.require_teacher_token(session, None, user)
-    with pytest.raises(TeacherSessionRequired):
-        await teacher_sessions.require_teacher_token(session, result.token + "x", user)
 
 
 # --------------------------------------------------------------------------- login failures
@@ -257,9 +245,8 @@ async def test_change_password_reauthenticates_with_fresh_session(session, make_
     )
     await session.refresh(old.context.session)
     assert old.context.session.end_reason == TeacherSessionEndReason.PASSWORD_CHANGED
-    with pytest.raises(TeacherSessionRequired):
-        await teacher_sessions.require_teacher_token(session, old.token, user)
     assert new.context.session.id != old.context.session.id
+    assert (await teacher_sessions.require_teacher(session, user)).session.id == new.context.session.id
 
 
 async def test_reset_binding_ends_sessions(session, make_user) -> None:
@@ -273,29 +260,6 @@ async def test_reset_binding_ends_sessions(session, make_user) -> None:
 
 
 # --------------------------------------------------------------------------- web (Mini App)
-
-
-@pytest_asyncio.fixture
-async def client(session: AsyncSession, monkeypatch) -> AsyncIterator[httpx.AsyncClient]:
-    from app.web.app import app
-    from app.web.deps import get_db
-    from app.web.routers import teacher as teacher_router
-
-    async def _db() -> AsyncIterator[AsyncSession]:
-        yield session
-
-    monkeypatch.setattr(teacher_router, "_bot", NullBot)
-    app.dependency_overrides[get_db] = _db
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
-        yield c
-    app.dependency_overrides.pop(get_db, None)
-
-
-def _headers(user, token: str | None = None) -> dict[str, str]:
-    h = {"X-Telegram-Init-Data": sign_init_data(user.telegram_id)}
-    if token:
-        h["Authorization"] = f"Bearer {token}"
-    return h
 
 
 async def _chat_setup(session, make_user):
@@ -314,147 +278,171 @@ async def _chat_setup(session, make_user):
     return teacher_user, student, account, course, thread
 
 
-async def _web_login(client, user) -> str:
-    resp = await client.post(
-        "/teacher/api/login", json={"login": "teacher1", "password": TEACHER_PASSWORD}, headers=_headers(user)
+def _state(user) -> FSMContext:
+    return FSMContext(
+        MemoryStorage(), StorageKey(bot_id=1, chat_id=user.telegram_id, user_id=user.telegram_id)
     )
-    assert resp.status_code == 200, resp.text
-    return resp.json()["token"]
 
 
-async def test_web_chat_closed_after_24h_history_kept(session, make_user, client, clock) -> None:
-    teacher_user, _, _, _, thread = await _chat_setup(session, make_user)
-    token = await _web_login(client, teacher_user)
+def _text_message(text: str = "") -> AsyncMock:
+    msg = AsyncMock()
+    msg.text = text
+    return msg
 
-    ok = await client.get("/teacher/api/threads", headers=_headers(teacher_user, token))
-    assert ok.status_code == 200 and ok.json()["threads"][0]["id"] == thread.id
-    msgs = await client.get(
-        f"/teacher/api/threads/{thread.id}/messages", headers=_headers(teacher_user, token)
-    )
-    assert "Maxfiy savol" in msgs.text
 
+def _open(thread_id: int) -> teacher_chats.AuThreadCb:
+    return teacher_chats.AuThreadCb(action="open", thread_id=thread_id)
+
+
+def _sent(mock: AsyncMock) -> str:
+    calls = mock.answer.await_args_list + getattr(mock.message, "answer", AsyncMock()).await_args_list
+    edits = getattr(mock.message, "edit_text", AsyncMock()).await_args_list
+    return " ".join(str(c.args[0]) for c in calls + edits if c.args)
+
+
+# --------------------------------------------------------------------------- bot login (password in chat)
+
+
+async def test_bot_login_deletes_password_and_opens_session(session, make_user) -> None:
+    user = await make_user()
+    await make_teacher(session)
+    state = _state(user)
+    await state.set_state(cabinet.AuLogin.login)
+    await cabinet.login_step(_text_message("teacher1"), state)
+    pw = _text_message(TEACHER_PASSWORD)
+    await cabinet.password_step(pw, session, user, state)
+    pw.delete.assert_awaited()  # the password never stays in the chat
+    assert await teacher_sessions.get_active_session(session, user.telegram_id) is not None
+    assert await state.get_state() is None
+
+
+async def test_bot_wrong_password_deleted_and_no_session(session, make_user) -> None:
+    user = await make_user()
+    await make_teacher(session)
+    state = _state(user)
+    await state.update_data(au_login="teacher1")
+    await state.set_state(cabinet.AuLogin.password)
+    pw = _text_message("Wrong-password-123")
+    await cabinet.password_step(pw, session, user, state)
+    pw.delete.assert_awaited()
+    assert "noto‘g‘ri" in _sent(pw)
+    assert await teacher_sessions.get_active_session(session, user.telegram_id) is None
+    assert await state.get_state() == cabinet.AuLogin.login.state
+
+
+async def test_bot_first_login_changes_temporary_password(session, make_user) -> None:
+    user = await make_user()
+    await make_teacher(session, must_change_password=True)
+    state = _state(user)
+    await state.update_data(au_login="teacher1")
+    await state.set_state(cabinet.AuLogin.password)
+    await cabinet.password_step(_text_message(TEACHER_PASSWORD), session, user, state)
+    assert await state.get_state() == cabinet.AuLogin.new_password.state
+    assert await teacher_sessions.get_active_session(session, user.telegram_id) is None
+    new_pw = _text_message("Yangi-parol-2026")
+    await cabinet.new_password_step(new_pw, session, user, state)
+    new_pw.delete.assert_awaited()
+    assert await teacher_sessions.get_active_session(session, user.telegram_id) is not None
+
+
+async def test_bot_password_change_requires_session_and_current_password(session, make_user, clock) -> None:
+    user = await make_user()
+    await make_teacher(session)
+    await _login(session, user)
+    state = _state(user)
+    await state.set_state(cabinet.AuPassword.current)
+    current = _text_message(TEACHER_PASSWORD)
+    await cabinet.password_change_current(current, session, user, state)
+    current.delete.assert_awaited()
+    new_pw = _text_message("Boshqa-parol-2026")
+    await cabinet.password_change_new(new_pw, session, user, state)
+    new_pw.delete.assert_awaited()
+    assert "almashtirildi" in _sent(new_pw)
+    # After 24h even the password screen asks for a new login first.
     clock.travel(timedelta(hours=24, seconds=1))
-    for method, path, body in [
-        ("GET", "/teacher/api/me", None),
-        ("GET", "/teacher/api/threads", None),
-        ("GET", f"/teacher/api/threads/{thread.id}/messages", None),
-        ("POST", f"/teacher/api/threads/{thread.id}/messages", {"body": "salom"}),
-        (
-            "POST",
-            "/teacher/api/password",
-            {"current_password": TEACHER_PASSWORD, "new_password": "Xyz-pass-2027"},
-        ),
-        ("POST", "/teacher/api/resume", None),
-    ]:
-        resp = await client.request(method, path, json=body, headers=_headers(teacher_user, token))
-        assert resp.status_code == 401, (path, resp.text)
-        assert "Maxfiy" not in resp.text
-        if path != "/teacher/api/resume":
-            assert resp.json()["detail"]["code"] == "session"
-    # Session end does not delete chat history.
+    msg = _text_message()
+    await cabinet.password_change_start(msg, session, user, _state(user))
+    assert "qayta" in _sent(msg).lower()
+
+
+# --------------------------------------------------------------------------- bot chats
+
+
+async def test_bot_chat_closed_after_24h_history_kept(session, make_user, clock) -> None:
+    teacher_user, _, _, _, thread = await _chat_setup(session, make_user)
+    await _login(session, teacher_user)
+
+    msg = _text_message()
+    await teacher_chats.chats_entry(msg, session, teacher_user)
+    assert "Talaba" in str(msg.answer.await_args.kwargs.get("reply_markup"))
+    cb = _callback()
+    await teacher_chats.open_thread(
+        cb, teacher_chats.AuThreadCb(action="open", thread_id=thread.id), session, teacher_user
+    )
+    assert "Maxfiy savol" in _sent(cb)
+
+    clock.travel(timedelta(hours=24))
+    msg = _text_message()
+    await teacher_chats.chats_entry(msg, session, teacher_user)
+    assert "qayta" in _sent(msg).lower() and "Talaba" not in _sent(msg)
+    cb = _callback()
+    await teacher_chats.open_thread(
+        cb, teacher_chats.AuThreadCb(action="open", thread_id=thread.id), session, teacher_user
+    )
+    cb.message.edit_text.assert_not_awaited()
+    assert "Maxfiy" not in _sent(cb)
+    # Session end never deletes the history.
     assert await session.scalar(select(func.count(TeacherChatMessage.id))) == 1
 
 
-async def test_web_admin_revoke_blocks_next_request(session, make_user, client) -> None:
-    teacher_user, *_ = await _chat_setup(session, make_user)
+async def test_bot_admin_revoke_blocks_next_chat_request(session, make_user) -> None:
+    teacher_user, _, _, _, thread = await _chat_setup(session, make_user)
     admin = await make_user(role=UserRole.ADMIN)
-    token = await _web_login(client, teacher_user)
-    assert (
-        await client.get("/teacher/api/threads", headers=_headers(teacher_user, token))
-    ).status_code == 200
-    active = await teacher_sessions.get_active_session(session, teacher_user.telegram_id)
-    await teacher_sessions.revoke_session(session, active.id, actor=admin)
-    assert (
-        await client.get("/teacher/api/threads", headers=_headers(teacher_user, token))
-    ).status_code == 401
+    result = await _login(session, teacher_user)
+    await teacher_sessions.revoke_session(session, result.context.session.id, actor=admin)
+    cb = _callback()
+    await teacher_chats.open_thread(
+        cb, teacher_chats.AuThreadCb(action="open", thread_id=thread.id), session, teacher_user
+    )
+    cb.message.edit_text.assert_not_awaited()
+    assert "Maxfiy" not in _sent(cb)
 
 
-async def test_web_requires_token_and_matching_telegram_user(session, make_user, client) -> None:
-    teacher_user, student, *_ = await _chat_setup(session, make_user)
-    token = await _web_login(client, teacher_user)
-    assert (await client.get("/teacher/api/threads", headers=_headers(teacher_user))).status_code == 401
-    # Stolen token used from another Telegram account.
-    assert (await client.get("/teacher/api/threads", headers=_headers(student, token))).status_code == 401
-    # Valid initData alone is not enough; a bad initData signature is rejected outright.
-    bad = {
-        "X-Telegram-Init-Data": sign_init_data(teacher_user.telegram_id) + "0",
-        "Authorization": f"Bearer {token}",
-    }
-    assert (await client.get("/teacher/api/threads", headers=bad)).status_code == 401
-
-
-async def test_web_resume_rotates_token_without_extending(session, make_user, client) -> None:
-    teacher_user, *_ = await _chat_setup(session, make_user)
-    token = await _web_login(client, teacher_user)
-    expires = (await teacher_sessions.get_active_session(session, teacher_user.telegram_id)).expires_at
-    resp = await client.post("/teacher/api/resume", headers=_headers(teacher_user))
-    assert resp.status_code == 200
-    new_token = resp.json()["token"]
-    assert new_token != token
-    assert (await client.get("/teacher/api/me", headers=_headers(teacher_user, token))).status_code == 401
-    assert (await client.get("/teacher/api/me", headers=_headers(teacher_user, new_token))).status_code == 200
-    assert (
-        await teacher_sessions.get_active_session(session, teacher_user.telegram_id)
-    ).expires_at == expires
-
-
-async def test_web_logout(session, make_user, client) -> None:
-    teacher_user, *_ = await _chat_setup(session, make_user)
-    token = await _web_login(client, teacher_user)
-    assert (
-        await client.post("/teacher/api/logout", headers=_headers(teacher_user, token))
-    ).status_code == 200
-    assert (
-        await client.get("/teacher/api/threads", headers=_headers(teacher_user, token))
-    ).status_code == 401
-
-
-async def test_web_teacher_sees_only_own_threads_with_chat_right(session, make_user, client) -> None:
+async def test_bot_teacher_sees_only_own_threads_with_chat_right(session, make_user) -> None:
     teacher_user, _, account, course, thread = await _chat_setup(session, make_user)
     other_user = await make_user()
     other = await make_teacher(session, login="teacher2", user=other_user)
     await assign(session, other, course, can_chat=True)
-    resp = await client.post(
-        "/teacher/api/login",
-        json={"login": "teacher2", "password": TEACHER_PASSWORD},
-        headers=_headers(other_user),
-    )
-    other_token = resp.json()["token"]
-    assert (await client.get("/teacher/api/threads", headers=_headers(other_user, other_token))).json()[
-        "threads"
-    ] == []
-    resp = await client.get(
-        f"/teacher/api/threads/{thread.id}/messages", headers=_headers(other_user, other_token)
-    )
-    assert resp.status_code == 404 and "Maxfiy" not in resp.text
+    await _login(session, other_user, login="teacher2")
+    with pytest.raises(NotFound):
+        await teacher_chats.open_thread(
+            _callback(), teacher_chats.AuThreadCb(action="open", thread_id=thread.id), session, other_user
+        )
 
-    token = await _web_login(client, teacher_user)
+    await _login(session, teacher_user)
     assignment = await session.scalar(
         select(TeacherCourseAssignment).where(TeacherCourseAssignment.teacher_id == account.id)
     )
     assignment.can_chat = False
     await session.flush()
-    assert (await client.get("/teacher/api/threads", headers=_headers(teacher_user, token))).json()[
-        "threads"
-    ] == []
-    resp = await client.get(
-        f"/teacher/api/threads/{thread.id}/messages", headers=_headers(teacher_user, token)
-    )
-    assert resp.status_code == 403 and "Maxfiy" not in resp.text
+    with pytest.raises(AccessDenied):
+        await teacher_chats.open_thread(
+            _callback(), teacher_chats.AuThreadCb(action="open", thread_id=thread.id), session, teacher_user
+        )
 
 
-async def test_web_teacher_reply_delivered_to_student(session, make_user, client, monkeypatch) -> None:
+async def test_bot_teacher_reply_delivered_to_student(session, make_user, monkeypatch) -> None:
     teacher_user, student, _, _, thread = await _chat_setup(session, make_user)
-    token = await _web_login(client, teacher_user)
+    await _login(session, teacher_user)
     delivered = AsyncMock(return_value=True)
     monkeypatch.setattr(chat, "deliver_to_student", delivered)
-    resp = await client.post(
-        f"/teacher/api/threads/{thread.id}/messages",
-        json={"body": "Javob"},
-        headers=_headers(teacher_user, token),
-    )
-    assert resp.status_code == 200 and resp.json()["delivered"] is True
+    state = _state(teacher_user)
+    await state.update_data(au_thread=thread.id)
+    await state.set_state(teacher_chats.AuTeacherReply.body)
+    msg = _text_message("Javob")
+    await teacher_chats.reply_send(msg, NullBot(), session, teacher_user, state)
     assert delivered.await_args.args[1].id == student.id
+    assert "Yuborildi" in _sent(msg)
 
 
 # --------------------------------------------------------------------------- bot handlers
@@ -467,6 +455,7 @@ def _message() -> AsyncMock:
 def _callback() -> AsyncMock:
     cb = AsyncMock()
     cb.message = AsyncMock()
+    cb.message.__class__ = Message  # passes the handlers' isinstance(..., Message) checks
     return cb
 
 
@@ -483,7 +472,7 @@ async def test_bot_teacher_handlers_closed_after_expiry(session, make_user, cloc
     clock.travel(timedelta(hours=24))
     message_handlers = [
         cabinet.my_courses,
-        cabinet.chats_entry,
+        teacher_chats.chats_entry,
         cabinet.students_entry,
         cabinet.results_entry,
     ]

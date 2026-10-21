@@ -5,7 +5,6 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -84,7 +83,7 @@ class Lesson(IdMixin, TimestampMixin, Base):
 
 
 class MediaFile(IdMixin, TimestampMixin, Base):
-    """Metadata only; bytes live in S3. Protected files are never exposed via public URLs."""
+    """Material metadata. The file itself stays on Telegram's servers (`telegram_file_id`)."""
 
     __tablename__ = "media_files"
 
@@ -93,9 +92,6 @@ class MediaFile(IdMixin, TimestampMixin, Base):
         str_enum(MediaStatus), default=MediaStatus.UPLOADING, server_default=MediaStatus.UPLOADING.value
     )
     storage_key: Mapped[str] = mapped_column(String(512), unique=True)
-    # For videos after transcoding: S3 prefix of the HLS rendition + AES-128 segment key.
-    hls_prefix: Mapped[str | None] = mapped_column(String(512))
-    hls_aes_key: Mapped[bytes | None] = mapped_column(LargeBinary(16))
     original_filename: Mapped[str | None] = mapped_column(String(255))
     mime_type: Mapped[str | None] = mapped_column(String(128))
     size_bytes: Mapped[int | None] = mapped_column(BigInteger)

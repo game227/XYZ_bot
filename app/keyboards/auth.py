@@ -1,12 +1,9 @@
 """AUTH keyboards and callback data: teacher login / cabinet, admin teachers & sessions, chat."""
 
 from collections.abc import Callable
-from urllib.parse import urlencode
 
 from aiogram.filters.callback_data import CallbackData
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
-
-from app.config import get_settings
+from aiogram.types import InlineKeyboardButton
 
 
 class AuCabinetCb(CallbackData, prefix="au_c"):
@@ -43,37 +40,6 @@ class AuChatCb(CallbackData, prefix="au_ch"):
     course_id: int = 0
     teacher_id: int = 0
     thread_id: int = 0
-
-
-def is_https_webapp() -> bool:
-    """Telegram accepts Mini App buttons only with HTTPS URLs."""
-    return get_settings().web_base_url.startswith("https://")
-
-
-def teacher_app_url(view: str | None = None, **params: object) -> str:
-    query = {k: v for k, v in params.items() if v is not None}
-    if view:
-        query["view"] = view
-    base = get_settings().web_base_url.rstrip("/") + "/teacher/"
-    return f"{base}?{urlencode(query)}" if query else base
-
-
-def teacher_app_button(text: str, view: str | None = None, **params: object) -> InlineKeyboardButton:
-    return InlineKeyboardButton(text=text, web_app=WebAppInfo(url=teacher_app_url(view, **params)))
-
-
-def login_keyboard() -> InlineKeyboardMarkup | None:
-    if not is_https_webapp():
-        return None
-    return InlineKeyboardMarkup(inline_keyboard=[[teacher_app_button("🔐 Kirish oynasini ochish", "login")]])
-
-
-def chats_keyboard(thread_id: int | None = None) -> InlineKeyboardMarkup | None:
-    if not is_https_webapp():
-        return None
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[teacher_app_button("💬 Chatlarni ochish", "chats", thread=thread_id)]]
-    )
 
 
 def rows(buttons: list[InlineKeyboardButton], per_row: int = 1) -> list[list[InlineKeyboardButton]]:

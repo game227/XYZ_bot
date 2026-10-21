@@ -1,10 +1,10 @@
 """Teacher <-> student chat stored in the bot's own DB (TZ §7.5). OWNER: AUTH.
 
 - Students write through the bot; teacher replies are delivered to the student by the bot.
-- Teachers read and write only in the Mini App, and only with a valid session
-  (`require_teacher_token` in the web router) and the `can_chat` right for the thread's course.
-- The bot never sends message text to a teacher: only a text-free "yangi xabar bor" notice,
-  so nothing is left in the teacher's Telegram history after the session ends.
+- Teachers read and write in the bot (💬 Chatlar), and only with a valid session
+  (`require_teacher` on every bot handler) and the `can_chat` right for the thread's course.
+- New student messages trigger only a text-free "yangi xabar bor" notice; the conversation
+  itself is shown inside 💬 Chatlar, which requires a valid session.
 - Session end never deletes chat history.
 """
 
@@ -29,7 +29,7 @@ from app.database.models import (
     User,
     UserStatus,
 )
-from app.keyboards.auth import AuChatCb, chats_keyboard
+from app.keyboards.auth import AuChatCb
 from app.services import teacher_sessions
 from app.services.errors import AccessDenied, InvalidInput, NotFound
 from app.services.subscriptions import has_active_subscription
@@ -41,7 +41,9 @@ logger = logging.getLogger(__name__)
 MAX_MESSAGE_LENGTH = 2000
 PAGE_SIZE = 50
 TEACHER_NOTICE_COOLDOWN_SECONDS = 60
-NEW_MESSAGE_NOTICE = "💬 Sizga o‘quvchidan yangi xabar bor. Ko‘rish uchun o‘qituvchi kabinetiga kiring."
+NEW_MESSAGE_NOTICE = (
+    "💬 Sizga o‘quvchidan yangi xabar bor. Ko‘rish uchun o‘qituvchi kabinetida «💬 Chatlar» bo‘limini oching."
+)
 
 
 def write_to_teacher_button(course_id: int, text: str = "✉️ O‘qituvchiga yozish") -> InlineKeyboardButton:
@@ -154,7 +156,7 @@ async def _add_message(
     return msg
 
 
-# --------------------------------------------------------------------------- teacher side (Mini App)
+# --------------------------------------------------------------------------- teacher side
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,7 +311,7 @@ async def notify_teacher(bot: Bot, teacher_telegram_id: int, *, teacher_id: int)
     except Exception:  # noqa: BLE001 - debounce is best effort
         logger.warning("chat notice debounce unavailable", exc_info=True)
     try:
-        await bot.send_message(teacher_telegram_id, NEW_MESSAGE_NOTICE, reply_markup=chats_keyboard())
+        await bot.send_message(teacher_telegram_id, NEW_MESSAGE_NOTICE)
     except Exception:  # noqa: BLE001 - delivery problems must not fail the student's send
         logger.warning("teacher chat notice failed for teacher %s", teacher_id, exc_info=True)
 

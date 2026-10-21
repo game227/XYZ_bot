@@ -1,9 +1,11 @@
 name: xyz-bot
 
-# Development: infra only, the app runs from the venv (see README):
-#   docker compose up -d postgres redis minio
-# Production (VPS): everything, behind Caddy with automatic HTTPS (see docs/DEPLOY.md):
+# A pure Telegram bot: no website, no inbound ports. The bot uses long polling.
+#
+# Run everything (this computer or a VPS):
 #   docker compose --profile app up -d --build
+# Development (infra only, the app runs from the venv — see README):
+#   docker compose up -d postgres redis
 
 x-app: &app
   build: .
@@ -12,8 +14,6 @@ x-app: &app
   environment:
     DATABASE_URL: postgresql+asyncpg://xyz:${POSTGRES_PASSWORD:-xyz}@postgres:5432/xyz
     REDIS_URL: redis://redis:6379/0
-    # Set S3_ENDPOINT_URL in .env for an external S3; defaults to the bundled MinIO.
-    S3_ENDPOINT_URL: ${S3_ENDPOINT_URL_DOCKER:-http://minio:9000}
   restart: unless-stopped
   profiles: ["app"]
 
@@ -52,22 +52,6 @@ services:
       retries: 10
     restart: unless-stopped
 
-  minio:
-    # MinIO no longer publishes free images (Docker Hub / quay). Development uses the frozen
-    # Bitnami legacy build; production should use a managed S3 (see docs/DEPLOY.md).
-    image: bitnamilegacy/minio:2025.7.23-debian-12-r5
-    environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
-      MINIO_DEFAULT_BUCKETS: ${S3_BUCKET:-xyz-media}
-    ports: ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
-    volumes: [miniodata:/bitnami/minio/data]
-    healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:9000/minio/health/live"]
-      interval: 10s
-      retries: 10
-    restart: unless-stopped
-
   migrate:
     <<: *app
     command: ["alembic", "upgrade", "head"]
@@ -80,38 +64,10 @@ services:
     <<: [*app, *after-migrate]
     command: ["python", "-m", "app.main"]
 
-  web:
-    <<: [*app, *after-migrate]
-    command: ["uvicorn", "app.web.app:app", "--host", "0.0.0.0", "--port", "8080",
-              "--proxy-headers", "--forwarded-allow-ips", "*"]
-    ports: ["127.0.0.1:8080:8080"]
-    healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:8080/healthz"]
-      interval: 15s
-      retries: 5
-
   worker:
     <<: [*app, *after-migrate]
     command: ["arq", "app.workers.main.WorkerSettings"]
 
-  caddy:
-    image: caddy:2.10.0-alpine
-    environment:
-      DOMAIN: ${DOMAIN:-localhost}
-    ports: ["80:80", "443:443", "443:443/udp"]
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddydata:/data
-      - caddyconfig:/config
-    depends_on:
-      web:
-        condition: service_healthy
-    restart: unless-stopped
-    profiles: ["app"]
-
 volumes:
   pgdata:
   redisdata:
-  miniodata:
-  caddydata:
-  caddyconfig:

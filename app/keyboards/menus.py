@@ -23,10 +23,12 @@ BTN_T_QUIZZES = "🧪 Testlarni boshqarish"
 BTN_T_CHATS = "💬 Chatlar"
 BTN_T_STUDENTS = "👨‍🎓 O‘quvchilar"
 BTN_T_RESULTS = "📊 Natijalar"
+BTN_T_PASSWORD = "🔑 Parolni almashtirish"
 BTN_T_LOGOUT = "🔒 Chiqish"
 
 # Admin (TZ §13.3)
 BTN_A_USERS = "👥 Foydalanuvchilar"
+BTN_A_ADMINS = "👑 Adminlar"
 BTN_A_TEACHERS = "👨‍🏫 O‘qituvchilar"
 BTN_A_TEACHER_SESSIONS = "🔐 O‘qituvchi sessiyalari"
 BTN_A_CONTENT = "📚 Fanlar va kurslar (admin)"
@@ -41,8 +43,8 @@ BTN_A_AUDIT = "🧾 Audit jurnali"
 BTN_A_SETTINGS = "⚙️ Bot sozlamalari"
 
 # Navigation
-BTN_STUDENT_MENU = "🎓 O‘quvchi menyusi"
-BTN_ADMIN_MENU = "🛠 Admin menyusi"
+BTN_STUDENT_MENU = "⬅️ Asosiy menyu"
+BTN_ADMIN_MENU = "🛠 Admin"
 BTN_TEACHER_MENU = "👨‍🏫 O‘qituvchi menyusi"
 
 
@@ -83,7 +85,8 @@ def teacher_menu(*, logged_in: bool) -> ReplyKeyboardMarkup:
             [BTN_T_MY_COURSES, BTN_T_MATERIALS],
             [BTN_T_QUIZZES, BTN_T_CHATS],
             [BTN_T_STUDENTS, BTN_T_RESULTS],
-            [BTN_T_LOGOUT, BTN_STUDENT_MENU],
+            [BTN_T_PASSWORD, BTN_T_LOGOUT],
+            [BTN_STUDENT_MENU],
         ],
         "O‘qituvchi kabineti",
     )
@@ -92,7 +95,8 @@ def teacher_menu(*, logged_in: bool) -> ReplyKeyboardMarkup:
 def admin_menu() -> ReplyKeyboardMarkup:
     return _kb(
         [
-            [BTN_A_USERS, BTN_A_TEACHERS],
+            [BTN_A_USERS, BTN_A_ADMINS],
+            [BTN_A_TEACHERS],
             [BTN_A_TEACHER_SESSIONS, BTN_A_CONTENT],
             [BTN_A_LESSONS_MEDIA, BTN_A_QUIZZES],
             [BTN_A_PLANS, BTN_A_PAYMENT_REQUESTS],

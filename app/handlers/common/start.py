@@ -22,13 +22,11 @@ ROLE_NAMES = {
 
 
 def main_menu_for(user: User) -> ReplyKeyboardMarkup:
-    """Default menu for a user. Admins land on the admin panel; everyone else on the student menu.
-
-    Teachers get a switch to the teacher menu (the cabinet itself always re-checks the session).
-    """
-    if is_admin(user):
-        return menus.admin_menu()
-    return menus.student_menu(show_teacher_switch=user.role == UserRole.TEACHER)
+    """Everyone, admins included, uses the bot as a regular user. Admins get an extra
+    «🛠 Admin» button that opens the admin panel; teachers get a switch to their menu."""
+    return menus.student_menu(
+        show_admin_switch=is_admin(user), show_teacher_switch=user.role == UserRole.TEACHER
+    )
 
 
 @router.message(CommandStart())
@@ -50,12 +48,7 @@ async def cmd_menu(message: Message, user: User, state: FSMContext) -> None:
 @router.message(F.text == menus.BTN_STUDENT_MENU)
 async def to_student_menu(message: Message, user: User, state: FSMContext) -> None:
     await state.clear()
-    await message.answer(
-        "O‘quvchi menyusi:",
-        reply_markup=menus.student_menu(
-            show_admin_switch=is_admin(user), show_teacher_switch=user.role == UserRole.TEACHER
-        ),
-    )
+    await message.answer("Asosiy menyu:", reply_markup=main_menu_for(user))
 
 
 @router.message(F.text == menus.BTN_ADMIN_MENU)

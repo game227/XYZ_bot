@@ -6,11 +6,10 @@ Rules enforced here, on every call, from the database (nothing is cached):
 - `expires_at = created_at + TEACHER_SESSION_TTL_HOURS`, set once at login and never updated
   (activity does not extend it).
 - One active session per teacher: creating a session ends the older ones (`replaced`).
-- Only sha256(token) is stored; the plain token lives in the Mini App's memory.
+- Each session gets an unguessable id; only its sha256 is stored.
 """
 
 import hashlib
-import hmac
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -107,23 +106,6 @@ async def require_teacher(
     return ctx
 
 
-async def require_teacher_token(
-    session: AsyncSession, token: str | None, user: User, *, now: datetime | None = None
-) -> TeacherContext:
-    """Web (Mini App) check: bearer token + the initData-verified user. Raises TeacherSessionRequired."""
-    if not token or len(token) > 256:
-        raise TeacherSessionRequired()
-    digest = hash_token(token)
-    ctx = await get_active_context(session, user.telegram_id, now=now)
-    if (
-        ctx is None
-        or ctx.teacher.user_id != user.id
-        or not hmac.compare_digest(ctx.session.token_hash, digest)
-    ):
-        raise TeacherSessionRequired()
-    return ctx
-
-
 async def create_session(
     session: AsyncSession, account: TeacherAccount, user: User, *, now: datetime | None = None
 ) -> tuple[str, TeacherContext]:
@@ -153,15 +135,6 @@ async def create_session(
         details={"teacher_id": account.id, "replaced": replaced, "expires_at": ts.expires_at.isoformat()},
     )
     return token, TeacherContext(teacher=account, session=ts)
-
-
-async def rotate_token(session: AsyncSession, ctx: TeacherContext) -> str:
-    """New bearer token for the same session (Mini App reopened). Keeps `expires_at` unchanged;
-    the previous token stops working."""
-    token = new_token()
-    ctx.session.token_hash = hash_token(token)
-    await session.flush()
-    return token
 
 
 async def revoke_all_for_teacher(
@@ -196,7 +169,7 @@ async def revoke_all_for_teacher(
 
 
 async def logout(session: AsyncSession, user: User, *, now: datetime | None = None) -> bool:
-    """`/logout` and the Mini App "Chiqish" button. Returns False if there was no active session."""
+    """`/logout` and the "🔒 Chiqish" button. Returns False if there was no active session."""
     ctx = await get_active_context(session, user.telegram_id, now=now)
     if ctx is None:
         return False

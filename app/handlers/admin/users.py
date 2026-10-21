@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import AdminPermission, User, UserRole, UserStatus
 from app.keyboards import menus
+from app.services import admins
 from app.services.access import AdminFilter, has_permission, is_superadmin, require_admin
 from app.services.audit import log_action
 from app.services.errors import AccessDenied, NotFound
@@ -242,18 +243,9 @@ async def set_admin(
     target = await _get_target(session, callback_data.user_id)
     _guard_target(user, target)
     if callback_data.action == "mkadmin":
-        if target.role != UserRole.STUDENT:
-            raise AccessDenied("Faqat o‘quvchini admin qilish mumkin.")
-        target.role = UserRole.ADMIN
-        target.permissions = []
-        action = "user.admin_granted"
+        target, _ = await admins.add_admin(session, user, target.telegram_id)
     else:
-        if target.role != UserRole.ADMIN:
-            raise NotFound("Bu foydalanuvchi admin emas.")
-        target.role = UserRole.STUDENT
-        target.permissions = []
-        action = "user.admin_revoked"
-    await log_action(session, action, actor=user, entity_type="user", entity_id=target.id)
+        target = await admins.remove_admin(session, user, target.id)
     await _show_card(callback, session, user, target)
 
 

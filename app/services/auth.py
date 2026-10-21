@@ -2,7 +2,7 @@
 
 - Passwords: Argon2id (argon2-cffi), hashed off the event loop. Plain passwords are never
   stored or logged; the audit log gets only the outcome.
-- Login happens only in the Mini App form (the password never appears in the bot chat).
+- Login happens in the bot chat; the handler deletes the password messages right away.
 - Brute force: 5 failed attempts within 15 minutes, per login and per Telegram ID, lock
   login for 15 minutes (Redis). If Redis is unreachable, login is refused (fail closed).
 - Admin operations on teacher accounts (create / block / reset password / reset binding /
@@ -246,7 +246,7 @@ class PasswordChangeRequired(ServiceError):
 
 @dataclass(frozen=True, slots=True)
 class LoginResult:
-    token: str  # plain session token; returned to the Mini App once, never stored
+    token: str  # plain session id; never stored (only its hash)
     context: teacher_sessions.TeacherContext
 
 
@@ -259,7 +259,7 @@ async def login(
     new_password: str | None = None,
     limiter: LoginRateLimiter | None = None,
 ) -> LoginResult:
-    """Authenticate a teacher for the Telegram user `user` (verified via Mini App initData).
+    """Authenticate a teacher for the Telegram user `user` (the Telegram account sending the update).
 
     Commits the session itself (audit rows of failed attempts must persist even though the
     caller turns the exception into an error response).
@@ -280,7 +280,7 @@ async def login(
         account = await session.scalar(
             select(TeacherAccount).where(TeacherAccount.login == norm_login).with_for_update()
         )
-    # Oversize passwords never reach argon2 with their full length (the web layer caps them too).
+    # Oversize passwords never reach argon2 with their full length.
     ok = await verify_password(
         account.password_hash if account else _DUMMY_HASH, (password or "")[:PASSWORD_MAX_LENGTH]
     )

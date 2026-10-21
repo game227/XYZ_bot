@@ -1,5 +1,20 @@
 # Team contract — XYZ Telegram bot
 
+> **Update 2026-10-21 — bot-only mode (user decision). This section overrides everything below.**
+> - No website, no Mini App, no web service: `app/web/**`, S3/MinIO storage, ffmpeg/HLS transcoding, the
+>   protected web player, the upload page and initData auth were removed. Long polling only; no domain,
+>   HTTPS or inbound ports.
+> - Lesson files: admins/teachers send them to the bot (video ≤ 2000 MB, documents/PDF/audio/images ≤ 200 MB).
+>   Only the Telegram `file_id` is stored; students receive files with `protect_content=True`
+>   (`media.store_telegram_file`, `media.send_protected_document`).
+> - Teacher login: in the bot chat (FSM); password messages are deleted at once. Strict 24h session:
+>   after expiry/logout/admin revoke every teacher function asks for login + password again.
+>   Password change: «🔑 Parolni almashtirish». Chats: «💬 Chatlar» in the bot (`handlers/teacher/chats.py`).
+> - Admins use the bot like regular users; the «🛠 Admin» button opens the admin panel. «👑 Adminlar»:
+>   add an admin by Telegram user ID, remove admins (`services/admins.py`). The only superadmin is
+>   `SUPERADMIN_IDS` (7564700491). A new admin gets the adder's permissions, never more.
+> - Sessions of the parallel phase have ended; CORE (this session) owns all files now.
+
 Read with `docs/TZ.md` (spec) and `docs/PLAN.md` (plan). Where this file and PLAN.md differ, **this file wins**.
 Project root: `/home/neo/Desktop/TG_xYz/xyz-telegram-bot`. Python venv: `.venv` (Python 3.14, deps installed).
 

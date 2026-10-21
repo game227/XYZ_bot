@@ -21,29 +21,9 @@ class Settings(BaseSettings):
     db_max_overflow: int = 20
     redis_url: str = "redis://localhost:6379/0"
 
-    # Web (Mini App, video player). Must be a public HTTPS URL for Telegram buttons.
-    web_base_url: str = "http://localhost:8080"
-    web_host: str = "0.0.0.0"
-    web_port: int = 8080
-    # Signs media tokens and other short-lived web tokens.
-    secret_key: SecretStr
-
-    # S3-compatible object storage (MinIO in dev)
-    s3_endpoint_url: str = "http://localhost:9000"
-    s3_access_key: SecretStr = SecretStr("minioadmin")
-    s3_secret_key: SecretStr = SecretStr("minioadmin")
-    s3_bucket: str = "xyz-media"
-    s3_region: str = "us-east-1"
-
-    # Media / player
-    media_max_upload_mb: int = 2048
-    media_token_ttl_seconds: int = 600
-    # "proxy": segments go through FastAPI (dev, tunnels); "redirect": short presigned S3 URLs.
-    media_segment_mode: str = "proxy"
-    s3_presign_ttl_seconds: int = 60
-    hls_segment_seconds: int = 6
-    ffmpeg_bin: str = "ffmpeg"
-    webapp_initdata_max_age_seconds: int = 86400
+    # Materials sent straight to the bot (stored as Telegram file_id, never downloaded)
+    telegram_document_max_mb: int = 200
+    telegram_video_max_mb: int = 2000
 
     # Notifications / live sessions
     broadcast_rate_per_second: int = 25

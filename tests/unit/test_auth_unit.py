@@ -110,20 +110,3 @@ async def test_rate_limit_fails_closed_when_redis_down() -> None:
 def test_rate_limit_keys_do_not_contain_raw_login() -> None:
     subjects = auth.LoginRateLimiter.subjects("secret.login", 5)
     assert all("secret" not in s for s in subjects)
-
-
-async def test_teacher_page_served_with_security_headers() -> None:
-    import httpx
-
-    from app.web.app import app
-
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
-        resp = await client.get("/teacher/")
-        assert resp.status_code == 200
-        assert "O‘qituvchi kabineti" in resp.text
-        assert resp.headers["cache-control"] == "no-store"
-        assert "default-src 'self'" in resp.headers["content-security-policy"]
-        # API without Telegram initData is rejected before touching the DB.
-        assert (await client.get("/teacher/api/threads")).status_code == 401
-        bad = await client.get("/teacher/api/threads", headers={"X-Telegram-Init-Data": "user=1&hash=00"})
-        assert bad.status_code == 401

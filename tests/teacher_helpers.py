@@ -1,15 +1,9 @@
 """Test helpers for AUTH (teacher accounts, sessions, chat). Not a test module."""
 
-import hashlib
-import hmac
-import json
-import time
 from contextlib import asynccontextmanager
-from urllib.parse import urlencode
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.database.models import Course, Subject, TeacherAccount, TeacherCourseAssignment, User
 from app.services import auth
 
@@ -80,20 +74,6 @@ class FakeRedis:
 def make_limiter() -> tuple[auth.LoginRateLimiter, FakeRedis]:
     redis = FakeRedis()
     return auth.LoginRateLimiter(redis), redis
-
-
-def sign_init_data(telegram_id: int, *, auth_date: int | None = None, first_name: str = "Test") -> str:
-    """Valid Telegram Mini App initData for the test bot token."""
-    token = get_settings().bot_token.get_secret_value()
-    fields = {
-        "auth_date": str(auth_date or int(time.time())),
-        "query_id": "AAH-test",
-        "user": json.dumps({"id": telegram_id, "first_name": first_name}, separators=(",", ":")),
-    }
-    check_string = "\n".join(f"{k}={v}" for k, v in sorted(fields.items()))
-    secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
-    fields["hash"] = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
-    return urlencode(fields)
 
 
 TEACHER_PASSWORD = "Strong-pass-2026"

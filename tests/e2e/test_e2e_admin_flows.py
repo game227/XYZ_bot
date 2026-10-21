@@ -31,9 +31,14 @@ pytestmark = pytest.mark.integration
 
 
 async def test_superadmin_builds_and_publishes_a_lesson(harness, superadmin, committing_sessionmaker):
+    # Admins use the bot like everyone else; «🛠 Admin» opens the admin panel.
     replies = await superadmin.send("/start")
     keyboard = superadmin.reply_keyboard(replies)
-    assert menus.BTN_A_CONTENT in keyboard and menus.BTN_A_USERS in keyboard
+    assert menus.BTN_ADMIN_MENU in keyboard and menus.BTN_COURSES in keyboard
+    assert menus.BTN_A_CONTENT not in keyboard
+    replies = await superadmin.send(menus.BTN_ADMIN_MENU)
+    keyboard = superadmin.reply_keyboard(replies)
+    assert {menus.BTN_A_CONTENT, menus.BTN_A_USERS, menus.BTN_A_ADMINS} <= set(keyboard)
 
     await superadmin.send(menus.BTN_A_CONTENT)
     for button, name in (
@@ -199,3 +204,35 @@ async def test_forged_and_stale_callbacks_leak_nothing(harness, committing_sessi
     replies = await owner.click("Bepul dars 1")
     assert LESSON_BODY not in owner.texts(replies)
     assert "mavjud emas" in owner.last_alert()
+
+
+async def test_admin_adds_and_removes_admin_by_telegram_id(harness, superadmin, committing_sessionmaker):
+    """👑 Adminlar: an admin is added by Telegram user ID, gets the «🛠 Admin» button, and is removed."""
+    newcomer = harness.client(first_name="Yangi")
+    await newcomer.send("/start")
+    assert menus.BTN_ADMIN_MENU not in newcomer.reply_keyboard(await newcomer.send("/menu"))
+
+    await superadmin.send("/start")
+    await superadmin.send(menus.BTN_ADMIN_MENU)
+    await superadmin.send(menus.BTN_A_ADMINS)
+    replies = await superadmin.click("Admin qo‘shish")
+    assert "user ID" in superadmin.texts(replies)
+    replies = await superadmin.send("abc")
+    assert "raqamlardan" in superadmin.texts(replies)  # rejected, still waiting for an ID
+    replies = await superadmin.send(str(newcomer.tg_id))
+    assert "admin qilindi" in superadmin.texts(replies)
+
+    # The new admin uses the bot as before and reaches the admin panel through «🛠 Admin».
+    keyboard = newcomer.reply_keyboard(await newcomer.send("/menu"))
+    assert menus.BTN_ADMIN_MENU in keyboard and menus.BTN_COURSES in keyboard
+    panel = newcomer.reply_keyboard(await newcomer.send(menus.BTN_ADMIN_MENU))
+    assert menus.BTN_A_ADMINS in panel
+
+    await superadmin.send(menus.BTN_A_ADMINS)
+    await superadmin.click("Yangi")
+    replies = await superadmin.click("Ha, olib tashlash")
+    assert "Boshqa adminlar yo‘q" in superadmin.texts(replies)
+    assert menus.BTN_ADMIN_MENU not in newcomer.reply_keyboard(await newcomer.send("/menu"))
+    # The removed admin can no longer open admin screens.
+    replies = await newcomer.send(menus.BTN_A_ADMINS)
+    assert "Adminlar" not in newcomer.texts(replies)

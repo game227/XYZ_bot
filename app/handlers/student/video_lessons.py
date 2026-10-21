@@ -1,4 +1,4 @@
-"""▶️ Video darslar — lessons that have a ready (transcoded) video, across the catalog."""
+"""▶️ Video darslar — lessons that have a video material, across the catalog."""
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message

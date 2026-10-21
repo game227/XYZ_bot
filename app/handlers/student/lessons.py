@@ -65,12 +65,9 @@ async def _send_lesson(
     materials = await lessons.lesson_materials(session, lesson.id)
     videos = [(lm, mf) for lm, mf in materials if mf.kind == MediaKind.VIDEO]
     others = [(lm, mf) for lm, mf in materials if mf.kind != MediaKind.VIDEO]
-    if videos:
-        from app.services import media  # COMMERCE
-
-        for n, (link, mf) in enumerate(videos, start=1):
-            label = link.caption or ("Videoni ko‘rish" if len(videos) == 1 else f"Video {n}")
-            rows.append([media.player_button(mf, lesson_id=lesson.id, text=f"▶️ {label}")])
+    for n, (link, mf) in enumerate(videos, start=1):
+        label = link.caption or ("Videoni ko‘rish" if len(videos) == 1 else f"Video {n}")
+        rows.append([btn(f"▶️ {label}", CtLes(action="mat", lesson_id=lesson.id, media_id=mf.id))])
     for n, (link, mf) in enumerate(others, start=1):
         label = link.caption or mf.original_filename or f"Material {n}"
         icon = KIND_ICONS.get(MediaKind(mf.kind), "📎")
@@ -155,9 +152,6 @@ async def send_material(
     if not await lessons.can_view_lesson(session, user, lesson):
         raise AccessDenied("Bu materialni ko‘rish uchun avval darsni oching.")
     media_file = await lessons.get_lesson_material(session, lesson.id, callback_data.media_id)
-    if media_file.kind == MediaKind.VIDEO:
-        await callback.answer("Video faqat himoyalangan player orqali ko‘rsatiladi.", show_alert=True)
-        return
     from app.services import media  # COMMERCE
 
     await callback.answer("Yuborilmoqda…")

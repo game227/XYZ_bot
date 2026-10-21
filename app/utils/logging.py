@@ -35,15 +35,7 @@ class RedactingFilter(logging.Filter):
 def setup_logging(settings: Settings) -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    handler.addFilter(
-        RedactingFilter(
-            [
-                settings.bot_token.get_secret_value(),
-                settings.secret_key.get_secret_value(),
-                settings.s3_secret_key.get_secret_value(),
-            ]
-        )
-    )
+    handler.addFilter(RedactingFilter([settings.bot_token.get_secret_value()]))
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(settings.log_level.upper())

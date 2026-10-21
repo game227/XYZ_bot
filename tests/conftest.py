@@ -14,7 +14,6 @@ import pytest_asyncio
 
 # Settings must be importable without a real .env.
 os.environ.setdefault("BOT_TOKEN", "123456789:TEST-token-TEST-token-TEST-token-123")
-os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production-0123456789")
 os.environ.setdefault("SUPERADMIN_IDS", "")
 # Safety net: app code that opens its own sessions (web deps, session_scope, workers) must use the
 # test database, never the dev database configured in .env. Without TEST_DATABASE_URL it fails fast.

@@ -21,7 +21,6 @@ LOAD_DB = os.environ.get("LOAD_DATABASE_URL", "postgresql+asyncpg://xyz:xyz@loca
 os.environ["DATABASE_URL"] = LOAD_DB
 os.environ["REDIS_URL"] = os.environ.get("LOAD_REDIS_URL", "redis://localhost:6379/14")
 os.environ["SUPERADMIN_IDS"] = ""
-os.environ["SECRET_KEY"] = "load-test-secret-key-not-for-production-000000"
 os.environ["LOG_LEVEL"] = "WARNING"
 
 from tests.load.harness import DUMMY_TOKEN  # noqa: E402

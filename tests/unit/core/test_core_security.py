@@ -1,9 +1,4 @@
-import hashlib
-import hmac
-import json
 import logging
-import time
-from urllib.parse import urlencode
 
 import pytest
 
@@ -13,7 +8,6 @@ from app.services import access
 from app.services.audit import _sanitize
 from app.services.errors import AccessDenied
 from app.utils.logging import RedactingFilter
-from app.web.telegram_auth import InitDataError, verify_init_data
 
 
 def _user(role: UserRole = UserRole.STUDENT, telegram_id: int = 111, **kw: object) -> User:
@@ -93,38 +87,3 @@ def test_log_filter_redacts_secrets() -> None:
     assert token not in message
     assert "s3-secret-value" not in message
     assert "qwerty" not in message
-
-
-def _signed_init_data(bot_token: str, *, user_id: int = 42, auth_date: int | None = None) -> str:
-    params = {
-        "auth_date": str(auth_date if auth_date is not None else int(time.time())),
-        "query_id": "AAE",
-        "user": json.dumps({"id": user_id, "first_name": "Ali"}, separators=(",", ":")),
-    }
-    check_string = "\n".join(f"{k}={v}" for k, v in sorted(params.items()))
-    secret = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
-    params["hash"] = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
-    return urlencode(params)
-
-
-def test_init_data_valid_signature() -> None:
-    token = get_settings().bot_token.get_secret_value()
-    data = verify_init_data(_signed_init_data(token, user_id=42))
-    assert data.user is not None and data.user.id == 42
-
-
-def test_init_data_tampered_or_foreign_token_rejected() -> None:
-    token = get_settings().bot_token.get_secret_value()
-    forged = _signed_init_data("987654321:another-bot-token", user_id=42)
-    with pytest.raises(InitDataError):
-        verify_init_data(forged)
-    tampered = _signed_init_data(token, user_id=42).replace("%22id%22%3A42", "%22id%22%3A43")
-    with pytest.raises(InitDataError):
-        verify_init_data(tampered)
-
-
-def test_init_data_expired_rejected() -> None:
-    token = get_settings().bot_token.get_secret_value()
-    old = _signed_init_data(token, auth_date=int(time.time()) - 10_000)
-    with pytest.raises(InitDataError):
-        verify_init_data(old, max_age_seconds=3600)
