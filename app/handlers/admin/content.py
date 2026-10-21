@@ -88,7 +88,7 @@ async def render_courses(session: AsyncSession, user: User) -> tuple[str, Inline
     """Course picker: all courses for content admins, assigned ones for teachers."""
     course_ids = await lessons.manageable_course_ids(session, user)
     if course_ids is not None and not course_ids:
-        if user.role == "teacher":
+        if user.role != "student":
             # Distinguish "no session" from "no courses": require_teacher raises the right message.
             from app.services import teacher_sessions
 

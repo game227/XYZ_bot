@@ -85,7 +85,9 @@ async def _teacher_course_ids(session: AsyncSession, user: User, right: str | No
 
     AUTH owns `teacher_sessions`; imported lazily so this module works before it lands.
     """
-    if user.role != UserRole.TEACHER:
+    # Plain students have no teacher account; teachers and admins may (one person can be
+    # student, teacher and admin at once), so for them the active session decides.
+    if user.role == UserRole.STUDENT:
         return set()
     try:
         from app.services import teacher_sessions
@@ -118,7 +120,7 @@ async def ensure_can_manage_course(
     perm = AdminPermission.QUIZZES if quizzes else AdminPermission.CONTENT
     if has_permission(user, perm):
         return
-    if user.role == UserRole.TEACHER:
+    if user.role != UserRole.STUDENT:
         try:
             from app.services import teacher_sessions
         except ImportError:  # pragma: no cover

@@ -85,3 +85,38 @@ async def test_admins_use_regular_menu_with_admin_button(session, make_user, sup
     assert menus.BTN_ADMIN_MENU in admin_buttons and menus.BTN_COURSES in admin_buttons
     assert menus.BTN_A_USERS not in admin_buttons  # admin panel opens only via «🛠 Admin»
     assert menus.BTN_ADMIN_MENU not in texts(main_menu_for(student))
+    # Admins can also open the teacher cabinet, from the main menu and from the admin panel.
+    assert menus.BTN_TEACHER_ENTRY in admin_buttons
+    assert menus.BTN_TEACHER_ENTRY in texts(menus.admin_menu())
+
+
+async def test_one_account_can_be_student_teacher_and_admin(session, make_user, monkeypatch, superadmin_ids):
+    from app.handlers.common.start import role_labels
+    from app.services import auth, lessons
+    from app.services.errors import TeacherSessionRequired
+    from tests.teacher_helpers import (
+        TEACHER_PASSWORD,
+        assign,
+        make_course,
+        make_limiter,
+        make_teacher,
+        use_cheap_hasher,
+    )
+
+    use_cheap_hasher(monkeypatch)
+    limiter, _ = make_limiter()
+    admin = await make_user(UserRole.ADMIN, permissions=["admins"])  # no content permission
+    account = await make_teacher(session, login="admin_teacher")
+    course = await make_course(session)
+    await assign(session, account, course, can_manage_content=True)
+
+    assert await role_labels(session, admin) == ["O‘quvchi", "Administrator"]
+    with pytest.raises(TeacherSessionRequired):
+        await lessons.ensure_can_manage_course(session, admin, course.id)
+
+    await auth.login(session, user=admin, login="admin_teacher", password=TEACHER_PASSWORD, limiter=limiter)
+    await session.refresh(admin)
+    assert admin.role == UserRole.ADMIN  # logging in as a teacher keeps admin rights
+    await lessons.ensure_can_manage_course(session, admin, course.id)  # teacher rights now apply
+    assert await role_labels(session, admin) == ["O‘quvchi", "O‘qituvchi", "Administrator"]
+    assert menus.BTN_ADMIN_MENU in {b.text for row in main_menu_for(admin).keyboard for b in row}

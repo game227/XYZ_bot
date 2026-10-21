@@ -78,7 +78,7 @@ def _on(value: bool) -> str:
 async def render_courses(session: AsyncSession, user: User) -> tuple[str, InlineKeyboardMarkup | None]:
     course_ids = await lessons.manageable_course_ids(session, user, quizzes=True)
     if course_ids is not None and not course_ids:
-        if user.role == "teacher":
+        if user.role != "student":
             from app.services import teacher_sessions
 
             await teacher_sessions.require_teacher(session, user)

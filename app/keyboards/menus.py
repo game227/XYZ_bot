@@ -102,7 +102,8 @@ def admin_menu() -> ReplyKeyboardMarkup:
             [BTN_A_PLANS, BTN_A_PAYMENT_REQUESTS],
             [BTN_A_LIVE, BTN_A_NOTIFICATIONS],
             [BTN_A_STATS, BTN_A_AUDIT],
-            [BTN_A_SETTINGS, BTN_STUDENT_MENU],
+            [BTN_A_SETTINGS],
+            [BTN_TEACHER_ENTRY, BTN_STUDENT_MENU],
         ],
         "Admin panel",
     )

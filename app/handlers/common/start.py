@@ -2,23 +2,28 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, ReplyKeyboardMarkup
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models import User, UserRole
+from app.database.models import TeacherAccount, User, UserRole
 from app.keyboards import menus
 from app.services import bot_settings
-from app.services.access import is_admin
+from app.services.access import is_admin, is_superadmin
 from app.services.subscriptions import get_active_subscription
 from app.utils.text import esc
 from app.utils.time import fmt_dt
 
 router = Router(name="common.start")
 
-ROLE_NAMES = {
-    UserRole.ADMIN: "Administrator",
-    UserRole.TEACHER: "O‘qituvchi",
-    UserRole.STUDENT: "O‘quvchi",
-}
+
+async def role_labels(session: AsyncSession, user: User) -> list[str]:
+    """One account can be a student, a teacher (bound teacher account) and an admin at once."""
+    labels = ["O‘quvchi"]
+    if await session.scalar(select(TeacherAccount.id).where(TeacherAccount.user_id == user.id)):
+        labels.append("O‘qituvchi")
+    if is_admin(user):
+        labels.append("Superadmin" if is_superadmin(user) else "Administrator")
+    return labels
 
 
 def main_menu_for(user: User) -> ReplyKeyboardMarkup:
@@ -80,7 +85,7 @@ async def cmd_profile(message: Message, user: User, session: AsyncSession) -> No
         f"Ism: {esc(user.full_name)}\n"
         f"Username: {username}\n"
         f"Telegram ID: <code>{user.telegram_id}</code>\n"
-        f"Rol: {ROLE_NAMES.get(user.role, user.role)}\n"
+        f"Rollar: {', '.join(await role_labels(session, user))}\n"
         f"Obuna: {sub_line}\n"
         f"Ro‘yxatdan o‘tgan: {fmt_dt(user.created_at)}"
     )
