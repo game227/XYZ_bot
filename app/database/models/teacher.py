@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, ForeignKey, Index, Integer, String, UniqueConstraint, text
+from sqlalchemy import BigInteger, ForeignKey, Index, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base, IdMixin, TimestampMixin
@@ -26,8 +26,6 @@ class TeacherAccount(IdMixin, TimestampMixin, Base):
     is_blocked: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     blocked_at: Mapped[datetime | None]
 
-    failed_login_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    locked_until: Mapped[datetime | None]
     password_changed_at: Mapped[datetime | None]
     last_login_at: Mapped[datetime | None]
 

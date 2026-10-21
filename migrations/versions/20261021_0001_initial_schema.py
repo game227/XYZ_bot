@@ -2,7 +2,7 @@
 
 Revision ID: 0001
 Revises:
-Create Date: 2026-10-21T13:26:11
+Create Date: 2026-10-21T13:28:26
 
 """
 
@@ -296,8 +296,6 @@ def upgrade() -> None:
         sa.Column("full_name", sa.String(length=255), nullable=False),
         sa.Column("is_blocked", sa.Boolean(), server_default=sa.text("false"), nullable=False),
         sa.Column("blocked_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("failed_login_count", sa.Integer(), server_default="0", nullable=False),
-        sa.Column("locked_until", sa.DateTime(timezone=True), nullable=True),
         sa.Column("password_changed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_login_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_by_user_id", sa.BigInteger(), nullable=True),
