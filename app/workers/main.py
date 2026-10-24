@@ -1,6 +1,7 @@
 """Worker entry point: arq app.workers.main.WorkerSettings"""
 
 import logging
+import time
 from typing import Any
 
 from arq import cron
@@ -21,6 +22,7 @@ async def startup(ctx: dict[str, Any]) -> None:
     settings = get_settings()
     setup_logging(settings)
     monitoring.init_sentry(settings, "worker")
+    ctx["started_at"] = time.monotonic()
     ctx["bot"] = create_bot(settings)
     ctx["limiter"] = RateLimiter(settings.broadcast_rate_per_second)
     logger.info("worker started")

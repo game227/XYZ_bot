@@ -1,6 +1,7 @@
 """arq jobs. Each job opens its own DB sessions; `ctx["bot"]` is a shared aiogram Bot."""
 
 import logging
+import time
 from typing import Any
 
 from app.config import get_settings
@@ -36,7 +37,7 @@ async def subscription_reminders(ctx: dict[str, Any]) -> int:
 async def monitor(ctx: dict[str, Any]) -> bool:
     """Worker heartbeat + one alert per bot outage (TZ §18, §19)."""
     await monitoring.beat("worker")
-    return await monitoring.check_bot_alive(ctx["bot"])
+    return await monitoring.check_bot_alive(ctx["bot"], uptime=time.monotonic() - ctx["started_at"])
 
 
 async def teacher_trail_sweep(ctx: dict[str, Any]) -> int:

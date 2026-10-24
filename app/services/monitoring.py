@@ -4,7 +4,8 @@
   (`xyz:metrics:<YYYYMMDDHH>`, kept 8 days). Admins see them in 📊 Statistika.
 - Heartbeats: the bot process refreshes `xyz:hb:bot` every 30 s, the worker refreshes
   `xyz:hb:worker` every minute. The Docker healthchecks (`python -m app.healthcheck`) read
-  them, and the worker alerts the superadmins once when the bot heartbeat disappears.
+  them, and the worker alerts the superadmins once when the bot heartbeat goes stale. Not
+  during the worker's first minutes, though: on boot the bot may simply start a bit later.
 - Optional Sentry (`SENTRY_DSN`): no PII, no local variables (they may hold passwords).
 
 Everything here is best effort: a Redis failure never breaks the request itself.
@@ -32,6 +33,8 @@ HEARTBEAT_TTL_SECONDS = 180
 BOT_HEARTBEAT_EVERY = 30
 SLOW_UPDATE_MS = 2000
 BOT_DOWN_ALERT_KEY = "xyz:alert:bot_down"
+BOT_DOWN_AFTER_SECONDS = 90  # three missed bot heartbeats
+STARTUP_GRACE_SECONDS = 120  # the worker may start before the bot (boot, restart)
 
 
 def _redis():
@@ -99,15 +102,20 @@ async def heartbeat_loop(component: str, every: int = BOT_HEARTBEAT_EVERY) -> No
         await asyncio.sleep(every)
 
 
-async def check_bot_alive(bot: Bot) -> bool:
-    """Worker: alert superadmins once per outage when the bot heartbeat is gone."""
-    alive = await last_beat("bot") is not None
+async def check_bot_alive(bot: Bot, *, uptime: float) -> bool:
+    """Worker: alert superadmins once per outage when the bot heartbeat is stale.
+
+    `uptime` is the worker's own uptime in seconds; nothing is reported during the first
+    STARTUP_GRACE_SECONDS, when the bot may not have started yet.
+    """
+    age = await last_beat("bot")
+    alive = age is not None and age <= BOT_DOWN_AFTER_SECONDS
     try:
         redis = _redis()
         if alive:
             if await redis.delete(BOT_DOWN_ALERT_KEY):
                 await _alert(bot, "✅ Bot yana ishlayapti.")
-        elif await redis.set(BOT_DOWN_ALERT_KEY, 1, nx=True):
+        elif uptime >= STARTUP_GRACE_SECONDS and await redis.set(BOT_DOWN_ALERT_KEY, 1, nx=True):
             await _alert(bot, "🚨 Bot jarayoni javob bermayapti (heartbeat yo‘q). Serverni tekshiring.")
     except Exception as exc:  # noqa: BLE001
         logger.warning("bot liveness check failed: %s", type(exc).__name__)

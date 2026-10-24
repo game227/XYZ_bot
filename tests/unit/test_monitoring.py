@@ -75,17 +75,38 @@ async def test_heartbeat_age(redis) -> None:
     assert 9 <= await monitoring.last_beat("bot") <= 11
 
 
+UP = monitoring.STARTUP_GRACE_SECONDS + 1  # worker uptime past the startup grace
+
+
 async def test_bot_down_alert_once_per_outage(redis, monkeypatch) -> None:
     monkeypatch.setattr(monitoring, "get_settings", lambda: SimpleNamespace(superadmin_ids=[1]))
     bot = SimpleNamespace(send_message=AsyncMock())
-    assert await monitoring.check_bot_alive(bot) is False
-    assert await monitoring.check_bot_alive(bot) is False
+    assert await monitoring.check_bot_alive(bot, uptime=UP) is False
+    assert await monitoring.check_bot_alive(bot, uptime=UP) is False
     assert bot.send_message.await_count == 1  # one alert for the whole outage
     await monitoring.beat("bot")
-    assert await monitoring.check_bot_alive(bot) is True
+    assert await monitoring.check_bot_alive(bot, uptime=UP) is True
     assert bot.send_message.await_count == 2  # "back online"
-    assert await monitoring.check_bot_alive(bot) is True
+    assert await monitoring.check_bot_alive(bot, uptime=UP) is True
     assert bot.send_message.await_count == 2
+
+
+async def test_no_alert_while_worker_is_starting(redis, monkeypatch) -> None:
+    """Worker started a second before the bot (boot, `docker compose up`): not an outage."""
+    monkeypatch.setattr(monitoring, "get_settings", lambda: SimpleNamespace(superadmin_ids=[1]))
+    bot = SimpleNamespace(send_message=AsyncMock())
+    assert await monitoring.check_bot_alive(bot, uptime=1) is False
+    await monitoring.beat("bot")
+    assert await monitoring.check_bot_alive(bot, uptime=61) is True
+    bot.send_message.assert_not_awaited()
+
+
+async def test_stale_heartbeat_counts_as_down(redis, monkeypatch) -> None:
+    monkeypatch.setattr(monitoring, "get_settings", lambda: SimpleNamespace(superadmin_ids=[1]))
+    bot = SimpleNamespace(send_message=AsyncMock())
+    redis.kv["xyz:hb:bot"] = int(time.time()) - monitoring.BOT_DOWN_AFTER_SECONDS - 5
+    assert await monitoring.check_bot_alive(bot, uptime=UP) is False
+    assert bot.send_message.await_count == 1
 
 
 async def test_redis_down_never_breaks_handler(monkeypatch) -> None:
