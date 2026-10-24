@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.models import AdminPermission, TeacherAccount, TeacherSession, User
 from app.keyboards import menus
 from app.keyboards.auth import AuSessionCb, pager_row
-from app.services import teacher_sessions
+from app.services import teacher_sessions, teacher_trail
 from app.services.access import AdminFilter, require_admin
 from app.utils.text import esc, truncate
 from app.utils.time import fmt_dt, utcnow
@@ -173,6 +173,7 @@ async def session_revoke(
         await callback.answer("Sessiya allaqachon yakunlangan.", show_alert=True)
     else:
         await callback.answer("Sessiya bekor qilindi.")
+        await teacher_trail.purge(bot, ts.id)
         try:
             await bot.send_message(
                 ts.telegram_id,

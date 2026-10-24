@@ -2,23 +2,15 @@
 # Restore test (TZ §19: backups must be proven restorable). Restores the newest (or given) dump
 # into a throwaway database on the same PostgreSQL, sanity-checks it, then drops it.
 #   scripts/backup_restore_check.sh [backups/db/xyz-....dump]
-# Weekly cron:  30 4 * * 0 cd /srv/xyz-telegram-bot && scripts/backup_restore_check.sh >> backups/backup.log 2>&1
+# Runs weekly from the `backup` compose service (scripts/backup_scheduler.sh).
 set -Eeuo pipefail
 
 cd "$(dirname "$0")/.."
-COMPOSE=(docker compose)
+source scripts/_pg.sh
 CHECK_DB="xyz_restore_check"
 DUMP="${1:-$(ls -1t backups/db/xyz-*.dump 2>/dev/null | head -n1)}"
 
-alert() {
-  [[ "${BACKUP_ALERTS:-1}" == 0 ]] && return 0
-  if [[ -x .venv/bin/python ]]; then
-    PYTHONPATH=. .venv/bin/python scripts/backup_alert.py "$1" >/dev/null 2>&1 || true
-  else
-    "${COMPOSE[@]}" run --rm --no-deps -T -e PYTHONPATH=. bot python scripts/backup_alert.py "$1" >/dev/null 2>&1 || true
-  fi
-}
-cleanup() { "${COMPOSE[@]}" exec -T postgres dropdb -U xyz --if-exists "$CHECK_DB" >/dev/null 2>&1 || true; }
+cleanup() { pg dropdb -U xyz --if-exists "$CHECK_DB" >/dev/null 2>&1 || true; }
 trap 'alert "❌ Zaxirani tiklash sinovi muvaffaqiyatsiz: ${DUMP:-dump topilmadi}"; cleanup' ERR
 trap cleanup EXIT
 
@@ -27,10 +19,10 @@ if [[ -f "$DUMP.sha256" ]]; then sha256sum -c --quiet "$DUMP.sha256"; fi
 
 echo "restoring $DUMP into $CHECK_DB"
 cleanup
-"${COMPOSE[@]}" exec -T postgres createdb -U xyz "$CHECK_DB"
-"${COMPOSE[@]}" exec -T postgres pg_restore -U xyz -d "$CHECK_DB" --no-owner --exit-on-error < "$DUMP"
+pg createdb -U xyz "$CHECK_DB"
+pg pg_restore -U xyz -d "$CHECK_DB" --no-owner --exit-on-error < "$DUMP"
 
-psql() { "${COMPOSE[@]}" exec -T postgres psql -U xyz -d "$1" -v ON_ERROR_STOP=1 -tAc "$2"; }
+psql() { pg psql -U xyz -d "$1" -v ON_ERROR_STOP=1 -tAc "$2"; }
 TABLES_SQL="SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name COLLATE \"C\""
 COLUMNS_SQL="SELECT md5(string_agg(table_name||'.'||column_name||':'||data_type||':'||is_nullable, ',' ORDER BY table_name, column_name)) FROM information_schema.columns WHERE table_schema='public'"
 counts_sql() {

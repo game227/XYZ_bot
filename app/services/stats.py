@@ -186,7 +186,7 @@ async def build_report(session: AsyncSession, *, now: datetime | None = None) ->
 
 
 async def get_report(session: AsyncSession, *, fresh: bool = False) -> StatsReport:
-    from app.services.media import get_redis
+    from app.services.auth import get_redis
 
     redis = get_redis()
     if not fresh:

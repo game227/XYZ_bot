@@ -1,7 +1,7 @@
 """Student lesson screen, materials and 🎓 Bepul darslar (TZ §4, §5, §9.1).
 
-Protected video is never sent as a Telegram file: the lesson shows a WebApp button to
-COMMERCE's player. Other materials go out with protect_content=True.
+Bot-only mode (see README, "TZ'dan chetlanishlar"): every material, video included, is sent as
+a Telegram file with protect_content=True.
 """
 
 import logging

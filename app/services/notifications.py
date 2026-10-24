@@ -27,6 +27,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.models import (
+    AttemptStatus,
     CourseEnrollment,
     DeliveryStatus,
     Lesson,
@@ -37,6 +38,7 @@ from app.database.models import (
     NotificationAudience,
     NotificationDelivery,
     NotificationStatus,
+    QuizAttempt,
     User,
     UserRole,
     UserSettings,
@@ -60,6 +62,8 @@ KIND_NEW_LESSON = "new_lesson"
 KIND_LIVE_REMINDER = "live_reminder"
 KIND_MEDIA_READY = "media_ready"
 KIND_LIVE_CHANGED = "live_changed"
+KIND_NEW_QUIZ = "new_quiz"
+KIND_QUIZ_UNFINISHED = "quiz_unfinished"
 
 # Sent even to users who turned notifications off (account/payment matters).
 CRITICAL_KINDS = {
@@ -82,6 +86,8 @@ KIND_LABELS = {
     KIND_LIVE_REMINDER: "📅 Jonli dars",
     KIND_LIVE_CHANGED: "📅 Jonli dars",
     KIND_MEDIA_READY: "🎬 Media",
+    KIND_NEW_QUIZ: "🧪 Yangi test",
+    KIND_QUIZ_UNFINISHED: "🧪 Test",
 }
 
 SEND_JOB = "send_notification"
@@ -180,6 +186,31 @@ async def notify_new_lesson(session: AsyncSession, lesson_id: int) -> Notificati
             audience_type=NotificationAudience.COURSE,
             audience={"course_id": lesson.course_id, "lesson_id": lesson.id},
             dedupe_key=f"new_lesson:{lesson.id}",
+            status=NotificationStatus.QUEUED,
+        )
+        .on_conflict_do_nothing(index_elements=[Notification.dedupe_key])
+        .returning(Notification.id)
+    )
+    notification_id = await session.scalar(stmt)
+    if notification_id is None:
+        return None
+    enqueue_after_commit(session, notification_id)
+    return await session.get(Notification, notification_id)
+
+
+async def notify_new_quiz(
+    session: AsyncSession, quiz_id: int, course_id: int, title: str
+) -> Notification | None:
+    """Tell students enrolled in the course about a newly activated quiz (once per quiz)."""
+    stmt = (
+        insert(Notification)
+        .values(
+            kind=KIND_NEW_QUIZ,
+            title="Yangi test",
+            body=f"🧪 Yangi test qo‘shildi: <b>{esc(title)}</b>\n\n🧪 Testlar bo‘limida ishlab ko‘ring.",
+            audience_type=NotificationAudience.COURSE,
+            audience={"course_id": course_id, "quiz_id": quiz_id},
+            dedupe_key=f"new_quiz:{quiz_id}",
             status=NotificationStatus.QUEUED,
         )
         .on_conflict_do_nothing(index_elements=[Notification.dedupe_key])
@@ -383,11 +414,21 @@ async def _recheck_live(session: AsyncSession, n: Notification, now: datetime) -
     )
 
 
+async def _recheck_quiz_unfinished(session: AsyncSession, n: Notification, now: datetime) -> bool:
+    attempt = await session.get(QuizAttempt, int(n.audience["attempt_id"]))
+    return (
+        attempt is not None
+        and attempt.status == AttemptStatus.IN_PROGRESS
+        and (attempt.deadline_at is None or attempt.deadline_at > now)
+    )
+
+
 RECHECKS: dict[str, Recheck] = {
     KIND_SUB_EXPIRING_3D: _recheck_expiring,
     KIND_SUB_EXPIRING_1D: _recheck_expiring,
     KIND_SUB_EXPIRED: _recheck_expired,
     KIND_LIVE_REMINDER: _recheck_live,
+    KIND_QUIZ_UNFINISHED: _recheck_quiz_unfinished,
 }
 
 

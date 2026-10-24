@@ -17,7 +17,7 @@ WORKDIR /srv
 # The app runs from /srv via PYTHONPATH, so every entry point (python -m, arq) uses the same code.
 COPY pyproject.toml README.md ./
 COPY app ./app
-RUN pip install .
+RUN pip install ".[monitoring]"
 
 COPY alembic.ini ./
 COPY migrations ./migrations

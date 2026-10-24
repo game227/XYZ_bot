@@ -10,6 +10,7 @@ class Settings(BaseSettings):
 
     environment: str = "dev"
     log_level: str = "INFO"
+    sentry_dsn: SecretStr | None = None  # optional error tracking (pip install ".[monitoring]")
 
     # Telegram
     bot_token: SecretStr

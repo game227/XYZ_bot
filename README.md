@@ -18,6 +18,19 @@ arq navbati). Dars fayllari Telegram serverlarida (`file_id`), `protect_content=
 | bot | `python -m app.main` | Telegram long polling |
 | worker | `arq app.workers.main.WorkerSettings` | eslatmalar, ommaviy xabarlar |
 
+## TZ'dan kelishilgan chetlanishlar
+
+Buyurtmachi qarori (21.10.2026, 24.10.2026 da tasdiqlangan): **faqat bot**, veb sayt, Mini App va domen yo‘q.
+
+| TZ bandi | TZ talabi | Amalda |
+|---|---|---|
+| §9.1, §9.3, §22.20–21 | Video himoyalangan HLS player orqali, vaqtinchalik token va watermark bilan | Video Telegram fayli sifatida `protect_content=True` bilan yuboriladi: Telegram ilovalarida forward va saqlash bloklanadi, lekin norasmiy klientlar yoki ekran yozuvidan himoya yo‘q |
+| §2, §9.2 | S3-compatible storage, checksum, resumable upload | Fayllar Telegram serverlarida, bazada faqat `file_id` va metama’lumot |
+| §19 | Media zaxirasi | Asl fayllarni alohida (masalan, bulutli diskda) saqlash buyurtmachi zimmasida: Telegram faylni o‘chirsa, uni qayta yuklash kerak |
+| §7.5 | Yozishmalar bot ichidagi tizimda | Yozishmalar botda; sessiya tugagach bot o‘qituvchiga ko‘rsatgan xabarlarni chatdan o‘chiradi (`services/teacher_trail.py`) |
+
+Himoyalangan player kerak bo‘lsa, olib tashlangan veb qism git tarixida bor (`ce664fa` dan oldingi commit).
+
 ## Ishga tushirish (Docker)
 
 ```bash

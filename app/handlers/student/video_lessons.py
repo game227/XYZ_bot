@@ -24,7 +24,8 @@ async def render(session: AsyncSession, user: User, page: int) -> tuple[str, Inl
     rows.append(pager_row(page, total, CtList, kind="video"))
     text = (
         "▶️ <b>Video darslar</b>\n\n"
-        "Videolar himoyalangan player orqali ko‘rsatiladi.\n🆓 bepul · 🔒 obuna kerak · ✅/📖 ochiq"
+        "Videolar himoyalangan holda yuboriladi: ularni boshqalarga uzatib yoki saqlab bo‘lmaydi.\n"
+        "🆓 bepul · 🔒 obuna kerak · ✅/📖 ochiq"
     )
     return text, markup(rows)
 

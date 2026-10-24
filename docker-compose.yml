@@ -63,10 +63,36 @@ services:
   bot:
     <<: [*app, *after-migrate]
     command: ["python", "-m", "app.main"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck", "bot"]
+      interval: 60s
+      start_period: 60s
+      retries: 3
 
   worker:
     <<: [*app, *after-migrate]
     command: ["arq", "app.workers.main.WorkerSettings"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck", "worker"]
+      interval: 60s
+      start_period: 90s
+      retries: 3
+
+  # Daily DB dump + weekly restore test (TZ §19), see scripts/backup_scheduler.sh and docs/BACKUP.md.
+  backup:
+    <<: *app
+    command: ["scripts/backup_scheduler.sh"]
+    init: true
+    environment:
+      DATABASE_URL: postgresql+asyncpg://xyz:${POSTGRES_PASSWORD:-xyz}@postgres:5432/xyz
+      REDIS_URL: redis://redis:6379/0
+      PGHOST: postgres
+      PGUSER: xyz
+      PGPASSWORD: ${POSTGRES_PASSWORD:-xyz}
+    volumes: ["./backups:/srv/backups"]
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   pgdata:

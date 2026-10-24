@@ -25,7 +25,7 @@ from app.database.models import (
     TeacherSessionEndReason,
     User,
 )
-from app.services import audit
+from app.services import audit, teacher_trail
 from app.services.errors import AccessDenied, TeacherSessionRequired
 from app.utils.time import utcnow
 
@@ -103,7 +103,18 @@ async def require_teacher(
     ctx = await get_active_context(session, user.telegram_id, now=now)
     if ctx is None or ctx.teacher.user_id != user.id:
         raise TeacherSessionRequired()
+    teacher_trail.mark(ctx.session.id, ctx.session.telegram_id)
     return ctx
+
+
+async def active_session_ids(
+    session: AsyncSession, session_ids: list[int], *, now: datetime | None = None
+) -> set[int]:
+    """Which of these sessions are still valid (same rules as `require_teacher`)."""
+    if not session_ids:
+        return set()
+    stmt = _active_stmt(now or utcnow()).where(TeacherSession.id.in_(session_ids))
+    return {row[0].id for row in (await session.execute(stmt)).all()}
 
 
 async def create_session(
@@ -168,11 +179,12 @@ async def revoke_all_for_teacher(
     return sum(1 for _, expires_at in rows if expires_at > now)
 
 
-async def logout(session: AsyncSession, user: User, *, now: datetime | None = None) -> bool:
-    """`/logout` and the "🔒 Chiqish" button. Returns False if there was no active session."""
+async def logout(session: AsyncSession, user: User, *, now: datetime | None = None) -> int | None:
+    """`/logout` and the "🔒 Chiqish" button. Returns the ended session id, or None if there
+    was no active session."""
     ctx = await get_active_context(session, user.telegram_id, now=now)
     if ctx is None:
-        return False
+        return None
     now = now or utcnow()
     ended = await session.execute(
         update(TeacherSession)
@@ -182,7 +194,7 @@ async def logout(session: AsyncSession, user: User, *, now: datetime | None = No
         .execution_options(synchronize_session="fetch")
     )
     if ended.first() is None:
-        return False
+        return None
     await audit.log_action(
         session,
         "teacher_session.logout",
@@ -191,7 +203,7 @@ async def logout(session: AsyncSession, user: User, *, now: datetime | None = No
         entity_id=ctx.session.id,
         details={"teacher_id": ctx.teacher.id},
     )
-    return True
+    return ctx.session.id
 
 
 async def revoke_session(

@@ -62,13 +62,18 @@ Oldingi versiyaga qaytish: `git checkout <commit> && docker compose --profile ap
 
 ## 5. Zaxira
 
-Har kuni `scripts/backup.sh` (cron) — tafsilotlar [`BACKUP.md`](BACKUP.md) da.
+`backup` konteyneri har kuni zaxira oladi va haftada bir tiklashni sinaydi — tafsilotlar [`BACKUP.md`](BACKUP.md) da.
 
 ## 6. Monitoring
 
 - Botda kutilmagan xato bo‘lsa, superadminga qisqa Telegram xabari keladi (bir turdagi xato haqida
   5 daqiqada ko‘pi bilan bir marta; tafsilotlar faqat loglarda).
 - Zaxira olish xato bersa, superadminga xabar keladi.
+- Bot va worker Redis'da heartbeat yangilab turadi: `docker compose ps` da `healthy`/`unhealthy`
+  ko‘rinadi, bot to‘xtab qolsa worker superadminlarga bir marta xabar beradi (qayta ishlaganda ham).
+- «📊 Statistika» → «🖥 Tizim holati»: bot/worker holati, soatlik va sutkalik so‘rovlar, xatolar,
+  o‘rtacha va sekin javoblar.
+- Ixtiyoriy: `.env` ga `SENTRY_DSN` yozilsa, xatolar Sentry'ga ham boradi (shaxsiy ma’lumotsiz).
 - Loglar: `docker compose logs --since 1h bot worker`.
 - Resurslar: `docker stats`, `df -h`.
 
@@ -78,4 +83,4 @@ Har kuni `scripts/backup.sh` (cron) — tafsilotlar [`BACKUP.md`](BACKUP.md) da.
 - [ ] `.env` faqat egasiga o‘qiladi (`chmod 600`), git'ga kirmaydi.
 - [ ] `ENVIRONMENT=prod`, kuchli `POSTGRES_PASSWORD`.
 - [ ] PostgreSQL va Redis faqat `127.0.0.1` da tinglaydi (compose shunday sozlangan).
-- [ ] Zaxira cron'i ishlayapti va tiklash sinovi o‘tkazilgan.
+- [ ] `backup` konteyneri ishlayapti (`docker compose logs backup`) va tiklash sinovi o‘tkazilgan.

@@ -27,7 +27,7 @@ from app.database.models import (
 from app.handlers.teacher import cabinet
 from app.handlers.teacher import chats as teacher_chats
 from app.keyboards.auth import AuCabinetCb
-from app.services import auth, chat, teacher_sessions
+from app.services import auth, chat, teacher_sessions, teacher_trail
 from app.services.errors import AccessDenied, NotFound, TeacherSessionRequired
 from app.utils.time import utcnow
 from tests.teacher_helpers import (
@@ -512,13 +512,45 @@ async def test_bot_handlers_enforce_course_rights(session, make_user) -> None:
         )
 
 
-async def test_bot_logout_command(session, make_user) -> None:
+async def test_bot_logout_command(session, make_user, monkeypatch) -> None:
     user = await make_user()
     await make_teacher(session)
-    await _login(session, user)
+    result = await _login(session, user)
+    purge = AsyncMock()
+    monkeypatch.setattr(teacher_trail, "purge", purge)
     msg = _message()
-    await cabinet.cmd_logout(msg, session, user)
+    bot = NullBot()
+    await cabinet.cmd_logout(msg, bot, session, user)
     assert await teacher_sessions.get_active_session(session, user.telegram_id) is None
+    purge.assert_awaited_once_with(bot, result.context.session.id)  # chat trail wiped (TZ §7.4)
+
+
+async def test_trail_sweep_purges_expired_session_only(session, make_user, clock, monkeypatch) -> None:
+    """After 24h what the bot showed the teacher is deleted from Telegram (TZ §7.4–7.5)."""
+    user = await make_user()
+    other = await make_user()
+    await make_teacher(session)
+    await make_teacher(session, login="teacher2")
+    old = (await _login(session, user)).context.session
+    clock.travel(timedelta(hours=12))
+    fresh = (await _login(session, other, login="teacher2")).context.session
+    purged: list[int] = []
+
+    async def fake_purge(bot, session_id):
+        purged.append(session_id)
+        return 1
+
+    async def keys(match):
+        for sid in (old.id, fresh.id):
+            yield teacher_trail.key(sid)
+
+    monkeypatch.setattr(teacher_trail, "purge", fake_purge)
+    monkeypatch.setattr(teacher_trail, "_redis", lambda: type("R", (), {"scan_iter": staticmethod(keys)})())
+
+    assert await teacher_trail.sweep(NullBot(), session, now=clock.now()) == 0
+    clock.travel(timedelta(hours=12, seconds=1))  # `old` is now past its strict 24h
+    assert await teacher_trail.sweep(NullBot(), session, now=clock.now()) == 1
+    assert purged == [old.id]
 
 
 async def assign_rights(session: AsyncSession, teacher_id: int, **rights: bool) -> None:

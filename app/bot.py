@@ -13,6 +13,8 @@ from app.middlewares.db import DbSessionMiddleware
 from app.middlewares.menu_reset import MenuResetMiddleware
 from app.middlewares.throttling import ThrottlingMiddleware
 from app.middlewares.user import UserMiddleware
+from app.services.monitoring import MetricsMiddleware
+from app.services.teacher_trail import TrailRequestMiddleware, TrailUpdateMiddleware
 
 BOT_COMMANDS = [
     BotCommand(command="start", description="Botni boshlash"),
@@ -25,10 +27,12 @@ BOT_COMMANDS = [
 
 
 def create_bot(settings: Settings) -> Bot:
-    return Bot(
+    bot = Bot(
         token=settings.bot_token.get_secret_value(),
         default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True),
     )
+    bot.session.middleware(TrailRequestMiddleware())
+    return bot
 
 
 def create_storage(settings: Settings) -> BaseStorage:
@@ -40,6 +44,8 @@ def create_storage(settings: Settings) -> BaseStorage:
 def create_dispatcher(settings: Settings, storage: BaseStorage | None = None) -> Dispatcher:
     dp = Dispatcher(storage=storage or create_storage(settings))
     # Outer update middlewares run for every update, in registration order.
+    dp.update.outer_middleware(MetricsMiddleware())
+    dp.update.outer_middleware(TrailUpdateMiddleware())
     dp.update.outer_middleware(ThrottlingMiddleware())
     dp.update.outer_middleware(DbSessionMiddleware(get_sessionmaker()))
     dp.update.outer_middleware(UserMiddleware())

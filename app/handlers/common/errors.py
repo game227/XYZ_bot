@@ -9,6 +9,7 @@ from aiogram import Bot, Router
 from aiogram.types import ErrorEvent
 
 from app.config import get_settings
+from app.services import monitoring
 from app.services.errors import ServiceError
 from app.utils.text import esc
 
@@ -49,6 +50,7 @@ async def on_error(event: ErrorEvent, bot: Bot) -> bool:
     else:
         logger.exception("Unhandled error while processing update %s", event.update.update_id, exc_info=exc)
         text = GENERIC_ERROR
+        await monitoring.count_error()
         await _alert_superadmins(bot, exc, event.update.update_id)
 
     update = event.update

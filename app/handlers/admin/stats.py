@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.models import AdminPermission, User
 from app.keyboards import menus
 from app.keyboards.commerce import CmStatsCb, btn, rows
-from app.services import stats, subscriptions
+from app.services import monitoring, stats, subscriptions
 from app.services.access import AdminFilter, require_admin
 from app.utils.text import esc, truncate
 from app.utils.time import fmt_dt
@@ -19,6 +19,20 @@ from app.utils.time import fmt_dt
 router = Router(name="admin.stats")
 
 PERM = AdminPermission.STATS
+
+
+def _beat(age: int | None) -> str:
+    return "🔴 javob yo‘q" if age is None or age > 120 else f"🟢 ishlayapti ({age} s oldin)"
+
+
+def render_health(h: monitoring.HealthReport) -> str:
+    return (
+        "\n\n<b>🖥 Tizim holati</b>\n"
+        f"Bot: {_beat(h.bot_beat)} · worker: {_beat(h.worker_beat)}\n"
+        f"Oxirgi soat: {h.updates_1h} so‘rov, {h.errors_1h} xato, o‘rtacha {h.avg_ms_1h} ms\n"
+        f"24 soat: {h.updates_24h} so‘rov, {h.errors_24h} xato, "
+        f"sekin (≥{monitoring.SLOW_UPDATE_MS // 1000} s): {h.slow_24h}, o‘rtacha {h.avg_ms_24h} ms"
+    )
 
 
 def render(r: stats.StatsReport) -> str:
@@ -68,7 +82,8 @@ async def stats_menu(message: Message, session: AsyncSession, user: User, state:
     require_admin(user, PERM)
     await state.clear()
     report = await stats.get_report(session)
-    await message.answer(render(report), reply_markup=rows(btn("🔄 Yangilash", CmStatsCb(action="refresh"))))
+    text = render(report) + render_health(await monitoring.health_report())
+    await message.answer(text, reply_markup=rows(btn("🔄 Yangilash", CmStatsCb(action="refresh"))))
 
 
 @router.callback_query(CmStatsCb.filter(F.action == "refresh"))
@@ -77,6 +92,7 @@ async def stats_refresh(callback: CallbackQuery, session: AsyncSession, user: Us
     report = await stats.get_report(session, fresh=True)
     await callback.answer("Yangilandi")
     if isinstance(callback.message, Message):
+        text = render(report) + render_health(await monitoring.health_report())
         await callback.message.edit_text(
-            render(report), reply_markup=rows(btn("🔄 Yangilash", CmStatsCb(action="refresh")))
+            text, reply_markup=rows(btn("🔄 Yangilash", CmStatsCb(action="refresh")))
         )

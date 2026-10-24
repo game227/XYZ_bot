@@ -14,14 +14,18 @@ Skriptlar (`scripts/`):
 - `backup_restore_check.sh` — oxirgi dumpni vaqtinchalik `xyz_restore_check` bazasiga tiklab tekshiradi, keyin o‘chiradi.
 - `backup_alert.py` — xatolikda superadminlarga Telegram xabari.
 
-## Jadval (cron, server foydalanuvchisi `docker` guruhida bo‘lishi kerak)
+## Jadval: avtomatik, `backup` konteyneri
+
+`docker compose --profile app up -d` bilan `backup` xizmati ham ko‘tariladi (`scripts/backup_scheduler.sh`). Cron kerak emas:
+
+- har kuni `BACKUP_AT` da (UTC, standart `03:15`) zaxira olinadi;
+- ishga tushganda oxirgi dump 24 soatdan eski bo‘lsa, zaxira darhol olinadi (kechasi o‘chiq turadigan kompyuter uchun);
+- `BACKUP_CHECK_WEEKDAY` kuni (1 = dushanba … 7 = yakshanba, standart 7) zaxiradan keyin tiklash sinovi o‘tkaziladi;
+- dumplar host'dagi `backups/db/` papkasiga yoziladi, loglar: `docker compose logs backup`.
+
+Serverdan tashqariga nusxa uchun host'da cron qo‘ying (pastga qarang):
 
 ```cron
-# Har kuni 03:15 (UTC) — zaxira
-15 3 * * *  cd /srv/xyz-telegram-bot && scripts/backup.sh >> backups/backup.log 2>&1
-# Har yakshanba 04:30 — tiklash sinovi
-30 4 * * 0  cd /srv/xyz-telegram-bot && COMPARE_SOURCE=1 scripts/backup_restore_check.sh >> backups/backup.log 2>&1
-# Har kuni 05:00 — serverdan tashqariga nusxa (pastga qarang)
 0 5 * * *   rclone sync /srv/xyz-telegram-bot/backups offsite-crypt:xyz-backups --log-file /var/log/rclone-xyz.log
 ```
 

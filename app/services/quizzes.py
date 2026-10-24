@@ -45,6 +45,7 @@ from app.services import audit, lessons
 from app.services.access import has_permission
 from app.services.errors import AccessDenied, Conflict, InvalidInput, NotFound, SubscriptionRequired
 from app.services.subscriptions import has_active_subscription
+from app.utils.text import esc
 from app.utils.time import utcnow
 
 TEXT_ANSWER_MAX = 500
@@ -743,6 +744,8 @@ async def toggle_quiz_flag(session: AsyncSession, actor: User, quiz_id: int, fla
         if not quiz.is_active and not await list_questions(session, quiz.id):
             raise InvalidInput("Faollashtirishdan oldin kamida bitta savol qo‘shing.")
         quiz.is_active = not quiz.is_active
+        if quiz.is_active:
+            await _announce_quiz(session, quiz)
     elif flag in _TOGGLES:
         setattr(quiz, flag, not getattr(quiz, flag))
     else:
@@ -750,6 +753,52 @@ async def toggle_quiz_flag(session: AsyncSession, actor: User, quiz_id: int, fla
     await session.flush()
     await _log(session, "quiz.updated", actor, quiz, **{flag: getattr(quiz, flag)})
     return quiz
+
+
+async def _announce_quiz(session: AsyncSession, quiz: Quiz) -> None:
+    """First activation of a quiz on a published lesson: tell the course (TZ §10.1)."""
+    from app.services import notifications
+
+    lesson = await session.get(Lesson, quiz.lesson_id)
+    if lesson is not None and await lessons.is_lesson_public(session, lesson):
+        await notifications.notify_new_quiz(session, quiz.id, lesson.course_id, quiz.title)
+
+
+UNFINISHED_REMINDER_AFTER = timedelta(hours=6)
+UNFINISHED_REMINDER_WINDOW = timedelta(days=7)
+
+
+async def queue_unfinished_reminders(session: AsyncSession, *, now: datetime | None = None) -> int:
+    """Remind once about a quiz started 6 h+ ago and left unfinished (TZ §10.1). Timed attempts
+    that already ran out are skipped; the sender re-checks the attempt before sending."""
+    from app.services import notifications
+
+    now = now or utcnow()
+    stmt = (
+        select(QuizAttempt.id, QuizAttempt.user_id, Quiz.title)
+        .join(Quiz, Quiz.id == QuizAttempt.quiz_id)
+        .where(
+            QuizAttempt.status == AttemptStatus.IN_PROGRESS,
+            QuizAttempt.started_at <= now - UNFINISHED_REMINDER_AFTER,
+            QuizAttempt.started_at > now - UNFINISHED_REMINDER_WINDOW,
+            (QuizAttempt.deadline_at.is_(None)) | (QuizAttempt.deadline_at > now),
+            Quiz.is_active.is_(True),
+        )
+        .limit(500)
+    )
+    created = 0
+    for attempt_id, user_id, title in (await session.execute(stmt)).all():
+        notification = await notifications.notify_user(
+            session,
+            user_id,
+            notifications.KIND_QUIZ_UNFINISHED,
+            f"🧪 «{esc(title)}» testini boshlagansiz, lekin hali yakunlamadingiz.\n\n"
+            "🧪 Testlar bo‘limidan davom ettiring.",
+            dedupe_key=f"quiz_unfinished:{attempt_id}",
+            meta={"attempt_id": attempt_id},
+        )
+        created += notification is not None
+    return created
 
 
 def _cycle(values: Sequence[str], current: str) -> str:

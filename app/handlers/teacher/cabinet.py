@@ -8,7 +8,7 @@ logs in again. Login happens in the chat; the password messages are deleted at o
 
 import time
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -29,7 +29,7 @@ from app.database.models import (
 )
 from app.keyboards import menus
 from app.keyboards.auth import AuCabinetCb, pager_row
-from app.services import auth, teacher_sessions
+from app.services import auth, teacher_sessions, teacher_trail
 from app.services.errors import ServiceError, TeacherSessionRequired
 from app.services.teacher_sessions import TeacherContext
 from app.utils.text import esc, truncate
@@ -175,8 +175,12 @@ async def new_password_step(message: Message, session: AsyncSession, user: User,
 
 @router.message(Command("logout"))
 @router.message(F.text == menus.BTN_T_LOGOUT)
-async def cmd_logout(message: Message, session: AsyncSession, user: User) -> None:
-    if await teacher_sessions.logout(session, user):
+async def cmd_logout(message: Message, bot: Bot, session: AsyncSession, user: User) -> None:
+    ended_id = await teacher_sessions.logout(session, user)
+    if ended_id is not None:
+        await session.commit()
+        teacher_trail.unmark()
+        await teacher_trail.purge(bot, ended_id)
         await message.answer(
             "🔒 Sessiya yakunlandi. Kabinetga qayta kirish uchun login va parol kerak bo‘ladi.",
             reply_markup=menus.teacher_menu(logged_in=False),
