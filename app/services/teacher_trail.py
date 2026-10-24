@@ -104,13 +104,15 @@ class TrailRequestMiddleware(BaseRequestMiddleware):
         bot: Bot,
         method: TelegramMethod[TelegramType],
     ) -> Response[TelegramType]:
-        response = await make_request(bot, method)
+        # Despite the annotation, aiogram passes the method's result itself here (Message,
+        # MessageId, bool...): AiohttpSession.make_request returns `response.result`.
+        result = await make_request(bot, method)
         scope = _scope.get()
         if scope is not None and scope.session_id is not None:
             chat_id = getattr(method, "chat_id", None)
             if chat_id == scope.telegram_id:
-                await record(scope.session_id, chat_id, _message_ids(response.result))
-        return response
+                await record(scope.session_id, chat_id, _message_ids(result))
+        return result
 
 
 class TrailUpdateMiddleware(BaseMiddleware):

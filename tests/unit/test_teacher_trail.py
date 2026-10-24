@@ -5,8 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from aiogram import Bot
 from aiogram.methods import SendMessage
-from aiogram.methods.base import Response
 from aiogram.types import Chat, Message, Update
 
 from app.services import teacher_sessions, teacher_trail
@@ -55,11 +55,12 @@ def _message(chat_id: int, message_id: int) -> Message:
 
 
 def _send(chat_id: int, message_id: int):
-    """A request middleware call for SendMessage answered with the given message id."""
+    """A request middleware call for SendMessage answered with the given message id. Like
+    aiogram's sessions, `make_request` returns the method's result itself, not a Response."""
     method = SendMessage(chat_id=chat_id, text="x")
 
     async def make_request(bot, m):
-        return Response[Message](ok=True, result=_message(chat_id, message_id))
+        return _message(chat_id, message_id)
 
     return make_request, method
 
@@ -84,6 +85,24 @@ async def test_records_only_teacher_chat_while_in_scope(redis) -> None:
     await _run_update(handler, incoming_id=5)
     assert redis.sets[teacher_trail.key(7)] == {f"{TEACHER_TG}:11", f"{TEACHER_TG}:5"}
     assert redis.ttl[teacher_trail.key(7)] == teacher_trail.TRAIL_TTL_SECONDS
+
+
+async def test_real_bot_request_chain(redis) -> None:
+    """Through aiogram's own Bot -> session -> middleware chain (no hand-made Response)."""
+    from tests.load.harness import DUMMY_TOKEN, FakeTelegramSession
+
+    bot = Bot(DUMMY_TOKEN, session=FakeTelegramSession(latency_ms=(0, 0)))
+    bot.session.middleware(teacher_trail.TrailRequestMiddleware())
+    sent: list[Message] = []
+
+    async def handler():
+        teacher_trail.mark(7, TEACHER_TG)
+        sent.append(await bot.send_message(TEACHER_TG, "chat"))
+        await bot.send_message(STUDENT_TG, "reply to a student")
+
+    await _run_update(handler, incoming_id=3)
+    assert isinstance(sent[0], Message)
+    assert redis.sets[teacher_trail.key(7)] == {f"{TEACHER_TG}:{sent[0].message_id}", f"{TEACHER_TG}:3"}
 
 
 async def test_scope_does_not_leak_between_updates(redis) -> None:
@@ -151,7 +170,7 @@ async def test_redis_failure_never_breaks_sending(monkeypatch) -> None:
     async def handler():
         teacher_trail.mark(7, TEACHER_TG)
         make, method = _send(TEACHER_TG, 50)
-        response = await mw(make, None, method)
-        assert response.result.message_id == 50
+        sent = await mw(make, None, method)
+        assert sent.message_id == 50
 
     await _run_update(handler)
